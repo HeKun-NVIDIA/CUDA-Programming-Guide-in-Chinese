@@ -60,6 +60,7 @@ int main()
 但是，一个内核可以由多个形状相同的线程块执行，因此线程总数等于每个块的线程数乘以块数。
 
 块被组织成一维、二维或三维的线程块网格(`grid`)，如下图所示。网格中的线程块数量通常由正在处理的数据的大小决定，通常超过系统中的处理器数量。
+
 ![grid-of-thread-blocks.png](grid-of-thread-blocks.png)
 
 ```<<<...>>> ```语法中指定的每个块的线程数和每个网格的块数可以是 ```int``` 或 `dim3` 类型。如上例所示，可以指定二维块或网格。
@@ -91,6 +92,7 @@ int main()
 线程块大小为16x16(256个线程)，尽管在本例中是任意更改的，但这是一种常见的选择。网格是用足够的块创建的，这样每个矩阵元素就有一个线程来处理。为简单起见，本例假设每个维度中每个网格的线程数可以被该维度中每个块的线程数整除，尽管事实并非如此。
 
 程块需要独立执行：必须可以以任何顺序执行它们，并行或串行。 这种独立性要求允许跨任意数量的内核以任意顺序调度线程块，如下图所示，使程序员能够编写随内核数量扩展的代码。
+
 ![automatic-scalability.png](automatic-scalability.png)
 
 块内的线程可以通过一些共享内存共享数据并通过同步它们的执行来协调内存访问来进行协作。 更准确地说，可以通过调用 `__syncthreads()` 内部函数来指定内核中的同步点； `__syncthreads()` 充当屏障，块中的所有线程必须等待，然后才能继续。 [Shared Memory](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory) 给出了一个使用共享内存的例子。 除了` __syncthreads()` 之外，[Cooperative Groups API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cooperative-groups) 还提供了一组丰富的线程同步示例。
@@ -116,3 +118,42 @@ CUDA 编程模型还假设主机(`host`)和设备(`device`)都在 DRAM 中维护
 统一内存提供托管内存来桥接主机和设备内存空间。托管内存可从系统中的所有 CPU 和 GPU 访问，作为具有公共地址空间的单个连贯内存映像。此功能可实现设备内存的超额订阅，并且无需在主机和设备上显式镜像数据，从而大大简化了移植应用程序的任务。有关统一内存的介绍，请参阅统一[内存编程](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#um-unified-memory-programming-hd)。
 
 #### 注:串行代码在主机(`host`)上执行，并行代码在设备(`device`)上执行。
+
+## 2.5 异步SIMT编程模型
+在 CUDA 编程模型中，线程是进行计算或内存操作的最低抽象级别。 从基于 NVIDIA Ampere GPU 架构的设备开始，CUDA 编程模型通过异步编程模型为内存操作提供加速。 异步编程模型定义了与 CUDA 线程相关的异步操作的行为。
+
+异步编程模型为 CUDA 线程之间的同步定义了[异步屏障](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#aw-barrier)的行为。 该模型还解释并定义了如何使用 cuda::memcpy_async 在 GPU计算时从全局内存中异步移动数据。
+
+### 2.5.1 异步操作
+
+异步操作定义为由CUDA线程发起的操作，并且与其他线程一样异步执行。在结构良好的程序中，一个或多个CUDA线程与异步操作同步。发起异步操作的CUDA线程不需要在同步线程中.
+
+这样的异步线程（as-if 线程）总是与发起异步操作的 CUDA 线程相关联。异步操作使用同步对象来同步操作的完成。这样的同步对象可以由用户显式管理（例如，`cuda::memcpy_async`）或在库中隐式管理（例如，`cooperative_groups::memcpy_async`）。
+
+同步对象可以是 `cuda::barrier` 或 `cuda::pipeline`。这些对象在[Asynchronous Barrier](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#aw-barrier) 和 [Asynchronous Data Copies using cuda::pipeline](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#memcpy_async_pipeline).中进行了详细说明。这些同步对象可以在不同的线程范围内使用。作用域定义了一组线程，这些线程可以使用同步对象与异步操作进行同步。下表定义了CUDA c++中可用的线程作用域，以及可以与每个线程同步的线程。
+
+
+| Thread Scope	| Description |
+| ----| ----|
+|cuda::thread_scope::thread_scope_thread|	Only the CUDA thread which initiated asynchronous operations synchronizes.|
+|cuda::thread_scope::thread_scope_block	|All or any CUDA threads within the same thread block as the initiating thread synchronizes.|
+|cuda::thread_scope::thread_scope_device|	All or any CUDA threads in the same GPU device as the initiating thread synchronizes.|
+|cuda::thread_scope::thread_scope_system|	All or any CUDA or CPU threads in the same system as the initiating thread synchronizes.|
+
+这些线程作用域是在CUDA[标准c++库](https://nvidia.github.io/libcudacxx/extended_api/thread_scopes.html)中作为标准c++的扩展实现的。
+
+## 2.6 Compute Capability
+设备的`Compute Capability`由版本号表示，有时也称其“SM版本”。该版本号标识GPU硬件支持的特性，并由应用程序在运行时使用，以确定当前GPU上可用的硬件特性和指令。
+
+`Compute Capability`包括一个主要版本号X和一个次要版本号Y，用X.Y表示
+
+主版本号相同的设备具有相同的核心架构。设备的主要修订号是8，为`NVIDIA Ampere GPU`的体系结构的基础上,7基于`Volta`设备架构,6设备基于`Pascal`架构,5设备基于`Maxwell`架构,3基于`Kepler`架构的设备,2设备基于`Fermi`架构,1是基于`Tesla`架构的设备。
+
+次要修订号对应于对核心架构的增量改进，可能包括新特性。
+
+`Turing`是计算能力7.5的设备架构，是基于Volta架构的增量更新。
+
+[CUDA-Enabled GPUs](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-enabled-gpus) 列出了所有支持 CUDA 的设备及其计算能力。[Compute Capabilities](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#compute-capabilities)给出了每个计算能力的技术规格。
+
+#### 注意:特定GPU的计算能力版本不应与CUDA版本(如CUDA 7.5、CUDA 8、CUDA 9)混淆，CUDA版本指的是CUDA软件平台的版本。CUDA平台被应用开发人员用来创建运行在许多代GPU架构上的应用程序，包括未来尚未发明的GPU架构。尽管CUDA平台的新版本通常会通过支持新的GPU架构的计算能力版本来增加对该架构的本地支持，但CUDA平台的新版本通常也会包含软件功能。
+#### 从CUDA 7.0和CUDA 9.0开始，不再支持`Tesla`和`Fermi`架构。
