@@ -549,3 +549,191 @@ T tex2Dgather(cudaTextureObject_t texObj,
               float x，float y，int comp = 0);
 ```
 从 2D 纹理对象 `texObj` 指定的 CUDA 数组中获取，使用纹理坐标 x 和 y 以及[纹理采集](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-gather)中描述的 `comp` 参数。
+
+
+### B.8.2. Texture Reference API
+
+#### B.8.2.1. tex1Dfetch()
+
+```C++
+template<class DataType>
+Type tex1Dfetch(
+   texture<DataType, cudaTextureType1D,
+           cudaReadModeElementType> texRef,
+   int x);
+
+float tex1Dfetch(
+   texture<unsigned char, cudaTextureType1D,
+           cudaReadModeNormalizedFloat> texRef,
+   int x);
+
+float tex1Dfetch(
+   texture<signed char, cudaTextureType1D,
+           cudaReadModeNormalizedFloat> texRef,
+   int x);
+
+float tex1Dfetch(
+   texture<unsigned short, cudaTextureType1D,
+           cudaReadModeNormalizedFloat> texRef,
+   int x);
+
+float tex1Dfetch(
+   texture<signed short, cudaTextureType1D,
+           cudaReadModeNormalizedFloat> texRef,
+   int x);
+```
+使用整数纹理坐标 x 从绑定到一维纹理引用 `texRef` 的线性内存区域中获取。 `tex1Dfetch()` 仅适用于非归一化坐标，因此仅支持边界和钳位寻址模式。 它不执行任何纹理过滤。 对于整数类型，它可以选择将整数提升为单精度浮点数。
+
+除了上面显示的功能外，还支持 2 元组和 4 元组； 例如：
+```C++
+float4 tex1Dfetch(
+   texture<uchar4, cudaTextureType1D,
+           cudaReadModeNormalizedFloat> texRef,
+   int x);
+```
+
+#### 作者添加: 因为这里的纹理引用API在当前版本被弃用,所以这里细节不再做过多描述.
+
+
+## B.9. Surface Functions
+Surface 函数仅受计算能力 2.0 及更高版本的设备支持。
+
+Surface 对象在 [Surface Object API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#surface-object-api-appendix) 中描述
+
+Surface引用在[Surface引用 API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#surface-reference-api-appendix) 中描述。
+
+在下面的部分中，`boundaryMode` 指定了边界模式，即如何处理超出范围的表面坐标； 它等于 `cudaBoundaryModeClamp`，在这种情况下，超出范围的坐标被限制到有效范围，或 `cudaBoundaryModeZero`，在这种情况下，超出范围的读取返回零并且忽略超出范围的写入，或者 `cudaBoundaryModeTrap`， 在这种情况下，超出范围的访问会导致内核执行失败。
+
+### B.9.1. Surface Object API
+#### B.9.1.1. surf1Dread()
+```C++
+template<class T>
+T surf1Dread(cudaSurfaceObject_t surfObj, int x,
+               boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 读取由一维surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.2. surf1Dwrite
+```C++
+template<class T>
+void surf1Dwrite(T data,
+                  cudaSurfaceObject_t surfObj,
+                  int x,
+                  boundaryMode = cudaBoundaryModeTrap);
+```
+将数据写入由坐标 x 处的一维surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.3. surf2Dread()
+```C++
+template<class T>
+T surf2Dread(cudaSurfaceObject_t surfObj,
+              int x, int y,
+              boundaryMode = cudaBoundaryModeTrap);
+template<class T>
+void surf2Dread(T* data,
+                 cudaSurfaceObject_t surfObj,
+                 int x, int y,
+                 boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和 y 读取二维surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.4 surf2Dwrite()
+```C++
+template<class T>
+void surf2Dwrite(T data,
+                  cudaSurfaceObject_t surfObj,
+                  int x, int y,
+                  boundaryMode = cudaBoundaryModeTrap);
+```
+将值数据写入由坐标 x 和 y 处的二维surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.5. surf3Dread()
+```C++
+template<class T>
+T surf3Dread(cudaSurfaceObject_t surfObj,
+              int x, int y, int z,
+              boundaryMode = cudaBoundaryModeTrap);
+template<class T>
+void surf3Dread(T* data,
+                 cudaSurfaceObject_t surfObj,
+                 int x, int y, int z,
+                 boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x、y 和 z 读取由三维surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.6. surf3Dwrite()
+```C++
+template<class T>
+void surf3Dwrite(T data,
+                  cudaSurfaceObject_t surfObj,
+                  int x, int y, int z,
+                  boundaryMode = cudaBoundaryModeTrap);
+```
+将值数据写入由坐标 x、y 和 z 处的三维surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.7. surf1DLayeredread()
+```C++
+template<class T>
+T surf1DLayeredread(
+                 cudaSurfaceObject_t surfObj,
+                 int x, int layer,
+                 boundaryMode = cudaBoundaryModeTrap);
+template<class T>
+void surf1DLayeredread(T data,
+                 cudaSurfaceObject_t surfObj,
+                 int x, int layer,
+                 boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和索引层读取一维分层surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.8. surf1DLayeredwrite()
+```C++
+template<class Type>
+void surf1DLayeredwrite(T data,
+                 cudaSurfaceObject_t surfObj,
+                 int x, int layer,
+                 boundaryMode = cudaBoundaryModeTrap);
+```
+将值数据写入坐标 x 和索引层的二维分层surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.9. surf2DLayeredread()
+```C++
+template<class T>
+T surf2DLayeredread(
+                 cudaSurfaceObject_t surfObj,
+                 int x, int y, int layer,
+                 boundaryMode = cudaBoundaryModeTrap);
+template<class T>
+void surf2DLayeredread(T data,
+                         cudaSurfaceObject_t surfObj,
+                         int x, int y, int layer,	
+                         boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和 y 以及索引层读取二维分层surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.10. surf2DLayeredwrite()
+```C++
+template<class T>
+void surf2DLayeredwrite(T data,
+                          cudaSurfaceObject_t surfObj,
+                          int x, int y, int layer,
+                          boundaryMode = cudaBoundaryModeTrap);
+```
+将数据写入由坐标 x 和 y 处的一维分层surface对象 `surfObj` 和索引层指定的 CUDA 数组。
+
+#### B.9.1.11. surfCubemapread()
+```C++
+template<class T>
+T surfCubemapread(
+                 cudaSurfaceObject_t surfObj,
+                 int x, int y, int face,
+                 boundaryMode = cudaBoundaryModeTrap);
+template<class T>
+void surfCubemapread(T data,
+                 cudaSurfaceObject_t surfObj,
+                 int x, int y, int face,
+                 boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和 y 以及面索引 face 读取立方体surface对象 `surfObj` 指定的 CUDA 数组。
+
+
