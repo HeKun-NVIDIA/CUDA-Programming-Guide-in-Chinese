@@ -736,4 +736,210 @@ void surfCubemapread(T data,
 ```
 使用坐标 x 和 y 以及面索引 face 读取立方体surface对象 `surfObj` 指定的 CUDA 数组。
 
+#### B.9.1.12. surfCubemapwrite()
+```C++
+template<class T>
+void surfCubemapwrite(T data,
+                 cudaSurfaceObject_t surfObj,
+                 int x, int y, int face,
+                 boundaryMode = cudaBoundaryModeTrap);
+```
+将数据写入由立方体对象 surfObj 在坐标 x 和 y 以及面索引 face 处指定的 CUDA 数组。 
+
+#### B.9.1.13. surfCubemapLayeredread()
+```C++
+template<class T>
+T surfCubemapLayeredread(
+             cudaSurfaceObject_t surfObj,
+             int x, int y, int layerFace,
+             boundaryMode = cudaBoundaryModeTrap);
+template<class T>
+void surfCubemapLayeredread(T data,
+             cudaSurfaceObject_t surfObj,
+             int x, int y, int layerFace,
+             boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和 y 以及索引 `layerFace` 读取由立方体分层surface对象 `surfObj` 指定的 CUDA 数组。
+
+#### B.9.1.14. surfCubemapLayeredwrite()
+```C++
+template<class T>
+void surfCubemapLayeredwrite(T data,
+             cudaSurfaceObject_t surfObj,
+             int x, int y, int layerFace,
+             boundaryMode = cudaBoundaryModeTrap);
+```
+将数据写入由立方体分层对象 `surfObj` 在坐标 x 和 y 以及索引 layerFace 指定的 CUDA 数组。
+
+### B.9.2. Surface Reference API
+#### B.9.2.1. surf1Dread()
+```C++
+template<class Type>
+Type surf1Dread(surface<void, cudaSurfaceType1D> surfRef,
+                int x,
+                boundaryMode = cudaBoundaryModeTrap);
+template<class Type>
+void surf1Dread(Type data,
+                surface<void, cudaSurfaceType1D> surfRef,
+                int x,
+                boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 读取绑定到一维surface引用 `surfRef` 的 CUDA 数组。
+
+#### B.9.2.2. surf1Dwrite
+```C++
+template<class Type>
+void surf1Dwrite(Type data,
+                 surface<void, cudaSurfaceType1D> surfRef,
+                 int x,
+                 boundaryMode = cudaBoundaryModeTrap);
+```
+
+#### B.9.2.3. surf2Dread()
+```C++
+template<class Type>
+Type surf2Dread(surface<void, cudaSurfaceType2D> surfRef,
+                int x, int y,
+                boundaryMode = cudaBoundaryModeTrap);
+template<class Type>
+void surf2Dread(Type* data,
+                surface<void, cudaSurfaceType2D> surfRef,
+                int x, int y,
+                boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和 y 读取绑定到二维surface引用 `surfRef` 的 CUDA 数组。
+
+#### B.9.2.4. surf2Dwrite()
+```C++
+template<class Type>
+void surf3Dwrite(Type data,
+                 surface<void, cudaSurfaceType3D> surfRef,
+                 int x, int y, int z,
+                 boundaryMode = cudaBoundaryModeTrap);
+```
+将值数据写入绑定到坐标 x 和 y 处的二维surface引用 `surfRef` 的 CUDA 数组。 
+
+#### B.9.2.5. surf3Dread()
+```C++
+template<class Type>
+Type surf3Dread(surface<void, cudaSurfaceType3D> surfRef,
+                int x, int y, int z,
+                boundaryMode = cudaBoundaryModeTrap);
+template<class Type>
+void surf3Dread(Type* data,
+                surface<void, cudaSurfaceType3D> surfRef,
+                int x, int y, int z,
+                boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x、y 和 z 读取绑定到三维surface引用 `surfRef` 的 CUDA 数组。
+
+#### B.9.2.6. surf3Dwrite()
+```C++
+template<class Type>
+void surf3Dwrite(Type data,
+                 surface<void, cudaSurfaceType3D> surfRef,
+                 int x, int y, int z,
+                 boundaryMode = cudaBoundaryModeTrap);
+```
+将数据写入绑定到坐标 x、y 和 z 处的surface引用 `surfRef` 的 CUDA 数组。
+
+#### B.9.2.7. surf1DLayeredread()
+```C++
+template<class Type>
+Type surf1DLayeredread(
+                surface<void, cudaSurfaceType1DLayered> surfRef,
+                int x, int layer,
+                boundaryMode = cudaBoundaryModeTrap);
+template<class Type>
+void surf1DLayeredread(Type data,
+                surface<void, cudaSurfaceType1DLayered> surfRef,
+                int x, int layer,
+                boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和索引层读取绑定到一维分层surface引用 `surfRef` 的 CUDA 数组。
+
+#### B.9.2.8. surf1DLayeredwrite()
+```C++
+template<class Type>
+void surf1DLayeredwrite(Type data,
+                surface<void, cudaSurfaceType1DLayered> surfRef,
+                int x, int layer,
+                boundaryMode = cudaBoundaryModeTrap);
+```
+将数据写入绑定到坐标 x 和索引层的二维分层surface引用 `surfRef` 的 CUDA 数组。
+
+#### B.9.2.9. surf2DLayeredread()
+```C++
+template<class Type>
+Type surf2DLayeredread(
+                surface<void, cudaSurfaceType2DLayered> surfRef,
+                int x, int y, int layer,
+                boundaryMode = cudaBoundaryModeTrap);
+template<class Type>
+void surf2DLayeredread(Type data,
+                surface<void, cudaSurfaceType2DLayered> surfRef,
+                int x, int y, int layer,
+                boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和 y 以及索引层读取绑定到二维分层surface引用 `surfRef` 的 CUDA 数组。
+
+#### B.9.2.10. surf2DLayeredwrite()
+```C++
+template<class Type>
+void surf2DLayeredwrite(Type data,
+                surface<void, cudaSurfaceType2DLayered> surfRef,
+                int x, int y, int layer,
+                boundaryMode = cudaBoundaryModeTrap);
+```
+将数据写入绑定到坐标 x 和 y 处的一维分层surface引用 `surfRef` 和索引层的 CUDA 数组。
+
+#### B.9.2.11. surfCubemapread()
+```C++
+template<class Type>
+Type surfCubemapread(
+                surface<void, cudaSurfaceTypeCubemap> surfRef,
+                int x, int y, int face,
+                boundaryMode = cudaBoundaryModeTrap);
+template<class Type>
+void surfCubemapread(Type data,
+                surface<void, cudaSurfaceTypeCubemap> surfRef,
+                int x, int y, int face,
+                boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和 y 以及面索引 `face` 读取绑定到立方体surface引用 `surfRef` 的 CUDA 数组。
+
+#### B.9.2.12. surfCubemapwrite()
+```C++
+template<class Type>
+void surfCubemapwrite(Type data,
+                surface<void, cudaSurfaceTypeCubemap> surfRef,
+                int x, int y, int face,
+                boundaryMode = cudaBoundaryModeTrap);
+```
+将数据写入绑定到位于坐标 x , y 和面索引 face 处的立方体引用 `surfRef` 的 CUDA 数组。
+
+B.9.2.13. surfCubemapLayeredread()
+```C++
+template<class Type>
+Type surfCubemapLayeredread(
+            surface<void, cudaSurfaceTypeCubemapLayered> surfRef,
+            int x, int y, int layerFace,
+            boundaryMode = cudaBoundaryModeTrap);
+template<class Type>
+void surfCubemapLayeredread(Type data,
+            surface<void, cudaSurfaceTypeCubemapLayered> surfRef,
+            int x, int y, int layerFace,
+            boundaryMode = cudaBoundaryModeTrap);
+```
+使用坐标 x 和 y 以及索引 layerFace 读取绑定到立方体分层surface引用 `surfRef` 的 CUDA 数组。
+
+#### B.9.2.14. surfCubemapLayeredwrite()
+```C++
+template<class Type>
+void surfCubemapLayeredwrite(Type data,
+            surface<void, cudaSurfaceTypeCubemapLayered> surfRef,
+            int x, int y, int layerFace,
+            boundaryMode = cudaBoundaryModeTrap);
+```
+将数据写入绑定到位于坐标 x , y 和索引 layerFace处的立方体分层引用 `surfRef`  的 CUDA 数组。
 
