@@ -943,3 +943,344 @@ void surfCubemapLayeredwrite(Type data,
 ```
 将数据写入绑定到位于坐标 x , y 和索引 layerFace处的立方体分层引用 `surfRef`  的 CUDA 数组。
 
+## B.10. Read-Only Data Cache Load Function
+只读数据缓存加载功能仅支持计算能力3.5及以上的设备。
+```C++
+T __ldg(const T* address);
+```
+返回位于地址`address`的 T 类型数据，其中 T 为 `char、signed char、short、int、long、long longunsigned char、unsigned short、unsigned int、unsigned long、unsigned long long、char2、char4、short2、short4、 int2、int4、longlong2uchar2、uchar4、ushort2、ushort4、uint2、uint4、ulonglong2float、float2、float4、double` 或 `double2`. 包含 `cuda_fp16.h` 头文件，T 可以是 `__half` 或 `__half2`。 同样，包含 cuda_bf16.h 头文件后，T 也可以是 `__nv_bfloat16` 或 `__nv_bfloat162`。 该操作缓存在只读数据缓存中（请参阅[全局内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#global-memory-3-0)）。
+
+## B.11. Load Functions Using Cache Hints
+这些加载功能仅受计算能力 3.5 及更高版本的设备支持。
+```C++
+T __ldcg(const T* address);
+T __ldca(const T* address);
+T __ldcs(const T* address);
+T __ldlu(const T* address);
+T __ldcv(const T* address);
+```
+返回位于地址`address`的 T 类型数据，其中 T 为 `char、signed char、short、int、long、long longunsigned char、unsigned short、unsigned int、unsigned long、unsigned long long、char2、char4、short2、short4、 int2、int4、longlong2uchar2、uchar4、ushort2、ushort4、uint2、uint4、ulonglong2float、float2、float4、double 或 double2`。 包含 `cuda_fp16.h` 头文件，T 可以是 `__half` 或 `__half2`。 同样，包含 cuda_bf16.h 头文件后，T 也可以是 `__nv_bfloat16` 或 `__nv_bfloat162`。 该操作正在使用相应的缓存运算符（请参阅 [PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#cache-operators)）
+
+## B.12. Store Functions Using Cache Hints
+这些存储功能仅受计算能力 3.5 及更高版本的设备支持。
+```C++
+void __stwb(T* address, T value);
+void __stcg(T* address, T value);
+void __stcs(T* address, T value);
+void __stwt(T* address, T value);
+```
+将类型 T 的`value`参数存储到地址 `address` 的位置，其中 T 是 `char、signed char、short、int、long、long longunsigned char、unsigned short、unsigned int、unsigned long、unsigned long long、char2、char4、short2 、short4、int2、int4、longlong2uchar2、uchar4、ushort2、ushort4、uint2、uint4、ulonglong2float、float2、float4、double 或 double2`。 包含 `cuda_fp16.h` 头文件，T 可以是 `__half` 或 `__half2`。 同样，包含 cuda_bf16.h 头文件后，T 也可以是 `__nv_bfloat16` 或 `__nv_bfloat162`。 该操作正在使用相应的缓存运算符（请参阅 [PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#cache-operators)）
+
+## B.13. Time Function
+```C++
+clock_t clock();
+long long int clock64();
+```
+在设备代码中执行时，返回每个时钟周期递增的每个多处理器计数器的值。 在内核开始和结束时对该计数器进行采样，获取两个样本的差异，并记录每个线程的结果，为每个线程提供设备完全执行线程所花费的时钟周期数的度量， 但不是设备实际执行线程指令所花费的时钟周期数。 前一个数字大于后者，因为线程是时间切片的。
+
+## B.14. Atomic Functions
+原子函数对驻留在全局或共享内存中的一个 32 位或 64 位字执行读-修改-写原子操作。 例如，`atomicAdd()` 在全局或共享内存中的某个地址读取一个字，向其中加一个数字，然后将结果写回同一地址。 该操作是原子的，因为它保证在不受其他线程干扰的情况下执行。 换句话说，在操作完成之前，没有其他线程可以访问该地址。 原子函数不充当内存栅栏，也不意味着内存操作的同步或排序约束（有关内存栅栏的更多详细信息，请参阅[内存栅栏函数](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#memory-fence-functions)）。 原子函数只能在设备函数中使用。
+
+原子函数仅相对于特定集合的线程执行的其他操作是原子的：
+
+* 系统范围的原子：当前程序中所有线程的原子操作，包括系统中的其他 CPU 和 GPU。 这些以 `_system` 为后缀，例如 `atomicAdd_system`。
+* 设备范围的原子：当前程序中所有 CUDA 线程的原子操作，在与当前线程相同的计算设备中执行。 这些没有后缀，只是以操作命名，例如 `atomicAdd`。
+* Block-wide atomics：当前程序中所有 CUDA 线程的原子操作，在与当前线程相同的线程块中执行。 这些以 _block 为后缀，例如 `atomicAdd_block`。
+
+在以下示例中，CPU 和 GPU 都以原子方式更新地址 `addr` 处的整数值：
+```C++
+__global__ void mykernel(int *addr) {
+  atomicAdd_system(addr, 10);       // only available on devices with compute capability 6.x
+}
+
+void foo() {
+  int *addr;
+  cudaMallocManaged(&addr, 4);
+  *addr = 0;
+
+   mykernel<<<...>>>(addr);
+   __sync_fetch_and_add(addr, 10);  // CPU atomic operation
+}
+```
+
+请注意，任何原子操作都可以基于 `atomicCAS()`（Compare And Swap）来实现。 例如，用于双精度浮点数的 atomicAdd() 在计算能力低于 6.0 的设备上不可用，但可以按如下方式实现：
+```C++
+#if __CUDA_ARCH__ < 600
+__device__ double atomicAdd(double* address, double val)
+{
+    unsigned long long int* address_as_ull =
+                              (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        __double_as_longlong(val +
+                               __longlong_as_double(assumed)));
+
+    // Note: uses integer comparison to avoid hang in case of NaN (since NaN != NaN)
+    } while (assumed != old);
+
+    return __longlong_as_double(old);
+}
+#endif
+```
+
+以下设备范围的原子 API 有系统范围和块范围的变体，但以下情况除外：
+
+* 计算能力低于 6.0 的设备只支持设备范围的原子操作，
+* 计算能力低于 7.2 的 Tegra 设备不支持系统范围的原子操作。
+
+### B.14.1. Arithmetic Functions
+#### B.14.1.1. atomicAdd()
+```C++
+int atomicAdd(int* address, int val);
+unsigned int atomicAdd(unsigned int* address,
+                       unsigned int val);
+unsigned long long int atomicAdd(unsigned long long int* address,
+                                 unsigned long long int val);
+float atomicAdd(float* address, float val);
+double atomicAdd(double* address, double val);
+__half2 atomicAdd(__half2 *address, __half2 val);
+__half atomicAdd(__half *address, __half val);
+__nv_bfloat162 atomicAdd(__nv_bfloat162 *address, __nv_bfloat162 val);
+__nv_bfloat16 atomicAdd(__nv_bfloat16 *address, __nv_bfloat16 val);
+```
+读取位于全局或共享内存中地址 `address` 的 16 位、32 位或 64 位字 `old`，计算 `(old + val)`，并将结果存储回同一地址的内存中。这三个操作在一个原子事务中执行。该函数返回`old`。
+
+`atomicAdd()` 的 32 位浮点版本仅受计算能力 2.x 及更高版本的设备支持。
+
+`atomicAdd()` 的 64 位浮点版本仅受计算能力 6.x 及更高版本的设备支持。
+
+`atomicAdd()` 的 32 位 `__half2` 浮点版本仅受计算能力 6.x 及更高版本的设备支持。 `__half2` 或 `__nv_bfloat162` 加法操作的原子性分别保证两个 `__half` 或 `__nv_bfloat16` 元素中的每一个；不保证整个 `__half2` 或 `__nv_bfloat162` 作为单个 32 位访问是原子的。
+
+`atomicAdd()` 的 16 位 `__half` 浮点版本仅受计算能力 7.x 及更高版本的设备支持。
+
+`atomicAdd()` 的 16 位 `__nv_bfloat16` 浮点版本仅受计算能力 8.x 及更高版本的设备支持。
+
+#### B.14.1.2. atomicSub()
+```C++
+int atomicSub(int* address, int val);
+unsigned int atomicSub(unsigned int* address,
+                       unsigned int val);
+```
+读取位于全局或共享内存中地址`address`的 32 位字 `old`，计算 `(old - val)`，并将结果存储回同一地址的内存中。 这三个操作在一个原子事务中执行。 该函数返回`old`。
+
+#### B.14.1.3. atomicExch()
+```C++
+int atomicExch(int* address, int val);
+unsigned int atomicExch(unsigned int* address,
+                        unsigned int val);
+unsigned long long int atomicExch(unsigned long long int* address,
+                                  unsigned long long int val);
+float atomicExch(float* address, float val);
+```
+读取位于全局或共享内存中地址address的 32 位或 64 位字 `old` 并将 `val` 存储回同一地址的内存中。 这两个操作在一个原子事务中执行。 该函数返回`old`。
+
+#### B.14.1.4. atomicMin()
+```C++
+int atomicMin(int* address, int val);
+unsigned int atomicMin(unsigned int* address,
+                       unsigned int val);
+unsigned long long int atomicMin(unsigned long long int* address,
+                                 unsigned long long int val);
+long long int atomicMin(long long int* address,
+                                long long int val);
+```
+读取位于全局或共享内存中地址`address`的 32 位或 64 位字 `old`，计算 `old` 和 `val` 的最小值，并将结果存储回同一地址的内存中。 这三个操作在一个原子事务中执行。 该函数返回`old`。
+
+`atomicMin()` 的 64 位版本仅受计算能力 3.5 及更高版本的设备支持。
+
+#### B.14.1.5. atomicMax()
+```C++
+int atomicMax(int* address, int val);
+unsigned int atomicMax(unsigned int* address,
+                       unsigned int val);
+unsigned long long int atomicMax(unsigned long long int* address,
+                                 unsigned long long int val);
+long long int atomicMax(long long int* address,
+                                 long long int val);
+```
+读取位于全局或共享内存中地址`address`的 32 位或 64 位字 `old`，计算 `old` 和 `val` 的最大值，并将结果存储回同一地址的内存中。 这三个操作在一个原子事务中执行。 该函数返回`old`。
+
+`atomicMax()` 的 64 位版本仅受计算能力 3.5 及更高版本的设备支持。
+
+#### B.14.1.6. atomicInc()
+```C++
+unsigned int atomicInc(unsigned int* address,
+                       unsigned int val);
+```
+
+读取位于全局或共享内存中地址`address`的 32 位字 `old`，计算 `((old >= val) ? 0 : (old+1))`，并将结果存储回同一地址的内存中。 这三个操作在一个原子事务中执行。 该函数返回`old`。
+
+#### B.14.1.7. atomicDec()
+```C++
+unsigned int atomicDec(unsigned int* address,
+                       unsigned int val);
+```
+读取位于全局或共享内存中地址`address`的 32 位字 `old`，计算 `(((old == 0) || (old > val)) ? val : (old-1) )`，并将结果存储回同一个地址的内存。 这三个操作在一个原子事务中执行。 该函数返回`old`。
+
+#### B.14.1.8. atomicCAS()
+```C++
+int atomicCAS(int* address, int compare, int val);
+unsigned int atomicCAS(unsigned int* address,
+                       unsigned int compare,
+                       unsigned int val);
+unsigned long long int atomicCAS(unsigned long long int* address,
+                                 unsigned long long int compare,
+                                 unsigned long long int val);
+unsigned short int atomicCAS(unsigned short int *address, 
+                             unsigned short int compare, 
+                             unsigned short int val);
+```
+读取位于全局或共享内存中地址`address`的 16 位、32 位或 64 位字 `old`，计算 `(old == compare ? val : old)` ，并将结果存储回同一地址的内存中。 这三个操作在一个原子事务中执行。 该函数返回`old`（Compare And Swap）。
+
+### B.14.2. Bitwise Functions
+
+#### B.14.2.1. atomicAnd()
+```C++
+int atomicAnd(int* address, int val);
+unsigned int atomicAnd(unsigned int* address,
+                       unsigned int val);
+unsigned long long int atomicAnd(unsigned long long int* address,
+                                 unsigned long long int val);
+```
+读取位于全局或共享内存中地址`address`的 32 位或 64 位字 `old`，计算 `(old & val)`，并将结果存储回同一地址的内存中。 这三个操作在一个原子事务中执行。 该函数返回`old`。
+
+`atomicAnd()` 的 64 位版本仅受计算能力 3.5 及更高版本的设备支持。
+
+#### B.14.2.2. atomicOr()
+```C++
+int atomicOr(int* address, int val);
+unsigned int atomicOr(unsigned int* address,
+                      unsigned int val);
+unsigned long long int atomicOr(unsigned long long int* address,
+                                unsigned long long int val);
+```
+读取位于全局或共享内存中地址`address`的 32 位或 64 位字 `old`，计算 `(old | val)`，并将结果存储回同一地址的内存中。 这三个操作在一个原子事务中执行。 该函数返回`old`。
+
+`atomicOr()` 的 64 位版本仅受计算能力 3.5 及更高版本的设备支持。
+
+#### B.14.2.3. atomicXor()
+```C++
+int atomicXor(int* address, int val);
+unsigned int atomicXor(unsigned int* address,
+                       unsigned int val);
+unsigned long long int atomicXor(unsigned long long int* address,
+                                 unsigned long long int val);
+```
+读取位于全局或共享内存中地址`address`的 32 位或 64 位字 `old`，计算 `(old ^ val)`，并将结果存储回同一地址的内存中。 这三个操作在一个原子事务中执行。 该函数返回`old`。
+
+`atomicXor()` 的 64 位版本仅受计算能力 3.5 及更高版本的设备支持。
+
+## B.15. Address Space Predicate Functions
+如果参数是空指针，则本节中描述的函数具有未指定的行为。
+
+### B.15.1. __isGlobal()
+```C++
+__device__ unsigned int __isGlobal(const void *ptr);
+```
+如果 `ptr` 包含全局内存空间中对象的通用地址，则返回 1，否则返回 0。
+
+### B.15.2. __isShared()
+```C++
+__device__ unsigned int __isShared(const void *ptr);
+```
+如果 `ptr` 包含共享内存空间中对象的通用地址，则返回 1，否则返回 0。
+
+### B.15.3. __isConstant()
+```C++
+__device__ unsigned int __isConstant(const void *ptr);
+```
+如果 `ptr` 包含常量内存空间中对象的通用地址，则返回 1，否则返回 0。
+
+### B.15.4. __isLocal()
+```C++
+__device__ unsigned int __isLocal(const void *ptr);
+```
+如果 `ptr` 包含本地内存空间中对象的通用地址，则返回 1，否则返回 0。
+
+## B.16. Address Space Conversion Functions
+
+### B.16.1. __cvta_generic_to_global()
+```C++
+__device__ size_t __cvta_generic_to_global(const void *ptr);
+```
+返回对 `ptr` 表示的通用地址执行 PTX `cvta.to.global` 指令的结果。
+
+### B.16.2. __cvta_generic_to_shared()
+```C++
+__device__ size_t __cvta_generic_to_shared(const void *ptr);
+```
+返回对 `ptr` 表示的通用地址执行 PTX `cvta.to.shared` 指令的结果。
+
+### B.16.3. __cvta_generic_to_constant()
+```C++
+__device__ size_t __cvta_generic_to_constant(const void *ptr);
+```
+返回对 `ptr` 表示的通用地址执行 PTX `cvta.to.const` 指令的结果。
+
+### B.16.4. __cvta_generic_to_local()
+```C++
+__device__ void * __cvta_global_to_generic(size_t rawbits);
+```
+返回通过对 `rawbits` 提供的值执行 PTX `cvta.to.local` 指令获得的通用指针。
+
+### B.16.5. __cvta_global_to_generic()
+```C++
+__device__ void * __cvta_global_to_generic(size_t rawbits);
+```
+返回通过对 `rawbits` 提供的值执行 PTX `cvta.global` 指令获得的通用指针。
+
+### B.16.6. __cvta_shared_to_generic()
+```C++
+__device__ void * __cvta_shared_to_generic(size_t rawbits);
+```
+返回通过对 `rawbits` 提供的值执行 PTX `cvta.shared` 指令获得的通用指针。
+
+
+### B.16.7. __cvta_constant_to_generic()
+```C++
+__device__ void * __cvta_constant_to_generic(size_t rawbits);
+```
+返回通过对 `rawbits` 提供的值执行 PTX `cvta.const` 指令获得的通用指针。
+
+### B.16.8. __cvta_local_to_generic()
+```C++
+__device__ void * __cvta_local_to_generic(size_t rawbits);
+```
+返回通过对 `rawbits` 提供的值执行 PTX `cvta.local` 指令获得的通用指针。
+
+
+## B.17. Alloca Function
+
+### B.17.1. Synopsis
+```C++
+              __host__ __device__ void * alloca(size_t size);
+```
+
+### B.17.2. Description
+
+`alloca()` 函数在调用者的堆栈帧(stack frame)中分配 `size` 个字节的内存。 返回值是一个指向分配内存的指针，当从设备代码调用函数时，内存的开头是 16 字节对齐的。 当 `alloca()` 的调用者返回时，分配的内存会自动释放。
+
+注意：在 Windows 平台上，在使用 `alloca()` 之前必须包含 `<malloc.h>`。 使用 `alloca()` 可能会导致堆栈溢出，用户需要相应地调整堆栈大小。
+
+它受计算能力 5.2 或更高版本的支持。
+
+### B.17.3. Example
+```C++
+__device__ void foo(unsigned int num) {
+	int4 *ptr = (int4 *)alloca(num * sizeof(int4));
+	// use of ptr
+	...
+}
+```
+
+## B.18. Compiler Optimization Hint Functions
+本节中描述的函数可用于向编译器优化器提供附加信息。
+
+### B.18.1. __builtin_assume_aligned()
+
+
+
+
