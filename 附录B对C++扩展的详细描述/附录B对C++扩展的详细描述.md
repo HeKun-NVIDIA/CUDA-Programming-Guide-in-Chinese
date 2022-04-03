@@ -1508,6 +1508,213 @@ warp 中的线程称为通道(lanes)，并且可能具有介于 0 和 warpSize-1
 
 新的 `*_sync shfl` 内部函数采用一个掩码，指示参与调用的线程。 必须为每个参与线程设置一个表示线程通道 ID 的位，以确保它们在硬件执行内部函数之前正确收敛。 掩码中命名的所有非退出线程必须使用相同的掩码执行相同的内在函数，否则结果未定义。
 
+### B.22.3. Notes
+线程只能从积极参与 __shfl_sync() 命令的另一个线程读取数据。 如果目标线程处于非活动状态，则检索到的值未定义。
+
+宽度必须是 2 的幂（即 2、4、8、16 或 32）。 未指定其他值的结果。
+
+### B.22.4. Examples
+#### B.22.4.1. Broadcast of a single value across a warp
+```C++
+#include <stdio.h>
+
+__global__ void bcast(int arg) {
+    int laneId = threadIdx.x & 0x1f;
+    int value;
+    if (laneId == 0)        // Note unused variable for
+        value = arg;        // all threads except lane 0
+    value = __shfl_sync(0xffffffff, value, 0);   // Synchronize all threads in warp, and get "value" from lane 0
+    if (value != arg)
+        printf("Thread %d failed.\n", threadIdx.x);
+}
+
+int main() {
+    bcast<<< 1, 32 >>>(1234);
+    cudaDeviceSynchronize();
+
+    return 0;
+}
+```
+
+B.22.4.2. Inclusive plus-scan across sub-partitions of 8 threads
+```C++
+#include <stdio.h>
+
+__global__ void scan4() {
+    int laneId = threadIdx.x & 0x1f;
+    // Seed sample starting value (inverse of lane ID)
+    int value = 31 - laneId;
+
+    // Loop to accumulate scan within my partition.
+    // Scan requires log2(n) == 3 steps for 8 threads
+    // It works by an accumulated sum up the warp
+    // by 1, 2, 4, 8 etc. steps.
+    for (int i=1; i<=4; i*=2) {
+        // We do the __shfl_sync unconditionally so that we
+        // can read even from threads which won't do a
+        // sum, and then conditionally assign the result.
+        int n = __shfl_up_sync(0xffffffff, value, i, 8);
+        if ((laneId & 7) >= i)
+            value += n;
+    }
+
+    printf("Thread %d final value = %d\n", threadIdx.x, value);
+}
+
+int main() {
+    scan4<<< 1, 32 >>>();
+    cudaDeviceSynchronize();
+
+    return 0;
+}
+```
+
+#### B.22.4.3. Reduction across a warp
+```C++
+#include <stdio.h>
+
+__global__ void warpReduce() {
+    int laneId = threadIdx.x & 0x1f;
+    // Seed starting value as inverse lane ID
+    int value = 31 - laneId;
+
+    // Use XOR mode to perform butterfly reduction
+    for (int i=16; i>=1; i/=2)
+        value += __shfl_xor_sync(0xffffffff, value, i, 32);
+
+    // "value" now contains the sum across all threads
+    printf("Thread %d final value = %d\n", threadIdx.x, value);
+}
+
+int main() {
+    warpReduce<<< 1, 32 >>>();
+    cudaDeviceSynchronize();
+
+    return 0;
+}
+```
+
+## B.23. Nanosleep Function
+### B.23.1. Synopsis
+```C++
+T __nanosleep(unsigned ns);
+```
+### B.23.2. Description
+`__nanosleep(ns)` 将线程挂起大约接近延迟 ns 的睡眠持续时间，以纳秒为单位指定。
+
+它受计算能力 7.0 或更高版本的支持。
+
+## B.23.3. Example
+以下代码实现了一个具有指数回退的互斥锁。
+```C++
+__device__ void mutex_lock(unsigned int *mutex) {
+    unsigned int ns = 8;
+    while (atomicCAS(mutex, 0, 1) == 1) {
+        __nanosleep(ns);
+        if (ns < 256) {
+            ns *= 2;
+        }
+    }
+}
+
+__device__ void mutex_unlock(unsigned int *mutex) {
+    atomicExch(mutex, 0);
+}
+```
+
+## B.24. Warp matrix functions
+C++ warp矩阵运算利用Tensor Cores来加速 `D=A*B+C` 形式的矩阵问题。 计算能力 7.0 或更高版本的设备的混合精度浮点数据支持这些操作。 这需要一个warp中所有线程的合作。 此外，仅当条件在整个 [warp](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#simt-architecture) 中的计算结果相同时，才允许在条件代码中执行这些操作，否则代码执行可能会挂起。
+
+### B.24.1. Description
+以下所有函数和类型都在命名空间 `nvcuda::wmma` 中定义。 Sub-byte操作被视为预览版，即它们的数据结构和 API 可能会发生变化，并且可能与未来版本不兼容。 这个额外的功能在 nvcuda::wmma::experimental 命名空间中定义。
+```C++
+template<typename Use, int m, int n, int k, typename T, typename Layout=void> class fragment;
+
+void load_matrix_sync(fragment<...> &a, const T* mptr, unsigned ldm);
+void load_matrix_sync(fragment<...> &a, const T* mptr, unsigned ldm, layout_t layout);
+void store_matrix_sync(T* mptr, const fragment<...> &a, unsigned ldm, layout_t layout);
+void fill_fragment(fragment<...> &a, const T& v);
+void mma_sync(fragment<...> &d, const fragment<...> &a, const fragment<...> &b, const fragment<...> &c, bool satf=false);
+```
+
+`fragment`:
+
+包含矩阵的一部分的重载类，分布在warp中的所有线程中。 矩阵元素到`fragment`内部存储的映射是未指定的，并且在未来的架构中可能会发生变化。
+
+只允许模板参数的某些组合。 第一个模板参数指定片段将如何参与矩阵运算。 可接受的使用值是：
+* `matrix_a` 当`fragment` 用作第一个被乘数时，A
+* `matrix_b` 当`fragment`用作第二个被乘数时，B
+* 当`fragment`用作源或目标累加器（分别为 C 或 D）时的累加器。
+
+`m、n 和 k` 大小描述了参与乘法累加操作的warp-wide矩阵块的形状。 每个tile的尺寸取决于它的作用。 对于 `matrix_a`，图块的尺寸为 `m x k`； 对于 `matrix_b`，维度是 `k x n`，累加器块是 `m x n`。
+
+对于被乘数，数据类型 `T` 可以是 `double、float、__half、__nv_bfloat16、char 或 unsigned char`，对于累加器，可以是 `double、float、int 或 __half`。 如[元素类型和矩阵大小](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#wmma-type-sizes)中所述，支持累加器和被乘数类型的有限组合。 必须为 `matrix_a` 和 `matrix_b` 片段指定 `Layout` 参数。 `row_major` 或 `col_major` 分别表示矩阵***行或列***中的元素在内存中是连续的。 累加器矩阵的 `Layout` 参数应保留默认值 `void`。 仅当按如下所述加载或存储累加器时才指定行或列布局。
+
+
+`load_matrix_sync`:
+
+等到所有warp通道(lanes)都到达 `load_matrix_sync`，然后从内存中加载矩阵片段 `a`。 `mptr` 必须是一个 256 位对齐的指针，指向内存中矩阵的第一个元素。 `ldm` 描述连续行（对于行主序）或列（对于列主序）之间的元素跨度，对于 `__half` 元素类型必须是 8 的倍数，对于浮点元素类型必须是 4 的倍数。 （即，两种情况下都是 16 字节的倍数）。 如果`fragment`是累加器，则布局参数必须指定为 `mem_row_major` 或 `mem_col_major`。 对于 `matrix_a` 和 `matrix_b` 片段，`Layout`是从`fragment`的`Layout`参数中推断出来的。 a 的 `mptr、ldm、layout` 和所有模板参数的值对于 warp 中的所有线程必须相同。 这个函数必须被warp中的所有线程调用，否则结果是未定义的。
+
+`store_matrix_sync`:
+
+等到所有warp通道都到达 `store_matrix_sync`，然后将矩阵片段 a 存储到内存中。 `mptr` 必须是一个 256 位对齐的指针，指向内存中矩阵的第一个元素。 `ldm` 描述连续行（对于行主序）或列（对于列主序）之间的元素跨度，对于` __half` 元素类型必须是 8 的倍数，对于浮点元素类型必须是 4 的倍数。 （即，两种情况下都是 16 字节的倍数）。 输出矩阵的布局必须指定为 `mem_row_major` 或 `mem_col_major`。 a 的 `mptr、ldm、layout` 和所有模板参数的值对于 warp 中的所有线程必须相同。
+
+`fill_fragment`:
+
+用常量 v 填充矩阵片段。由于未指定矩阵元素到每个片段的映射，因此该函数通常由 warp 中的所有线程调用，并具有共同的 v 值。
+
+`mma_sync`:
+
+等到所有`warp lanes`都到达`mma_sync`，然后执行warp同步的矩阵乘法累加操作`D=A*B+C`。 还支持原位(in-place)操作，`C=A*B+C`。 对于 warp 中的所有线程，每个矩阵片段的 `satf` 和模板参数的值必须相同。 此外，模板参数 `m、n 和 k` 必须在片段 `A、B、C 和 D` 之间匹配。该函数必须由 warp 中的所有线程调用，否则结果未定义。
+
+如果 `satf`（饱和到有限值--saturate to finite value）模式为真，则以下附加数值属性适用于目标累加器：
+* 如果元素结果为+Infinity，则相应的累加器将包含+MAX_NORM
+* 如果元素结果为 -Infinity，则相应的累加器将包含 -MAX_NORM
+* 如果元素结果为 NaN，则对应的累加器将包含 +0
+
+由于未指定矩阵元素到每个线程片段的映射，因此必须在调用 `store_matrix_sync` 后从内存（共享或全局）访问单个矩阵元素。 在 warp 中的所有线程将对所有片段元素统一应用元素操作的特殊情况下，可以使用以下`fragment`类成员实现直接元素访问。
+
+```C++
+enum fragment<Use, m, n, k, T, Layout>::num_elements;
+T fragment<Use, m, n, k, T, Layout>::x[num_elements];
+```
+
+例如，以下代码将累加器矩阵缩小一半。
+```C++
+wmma::fragment<wmma::accumulator, 16, 16, 16, float> frag;
+float alpha = 0.5f; // Same value for all threads in warp
+/*...*/
+for(int t=0; t<frag.num_elements; t++)
+frag.x[t] *= alpha; 
+```
+
+### B.24.2. Alternate Floating Point
+Tensor Core 支持在具有 8.0 及更高计算能力的设备上进行替代类型的浮点运算。
+
+`__nv_bfloat16`:
+
+此数据格式是另一种 `fp16 `格式，其范围与 `f32` 相同，但精度降低（7 位）。 您可以直接将此数据格式与 `cuda_bf16.h` 中提供的 `__nv_bfloat16` 类型一起使用。 具有 `__nv_bfloat16` 数据类型的矩阵片段需要与浮点类型的累加器组合。 支持的形状和操作与 `__half` 相同。
+
+`tf32`:
+
+这种数据格式是 `Tensor Cores` 支持的特殊浮点格式，范围与 f32 相同，但精度降低（>=10 位）。这种格式的内部布局是实现定义的。为了在 `WMMA` 操作中使用这种浮点格式，输入矩阵必须手动转换为 `tf32` 精度。
+
+为了便于转换，提供了一个新的内联函数 `__float_to_tf32`。虽然内联函数的输入和输出参数是浮点类型，但输出将是 `tf32`。这个新精度仅适用于张量核心，如果与其他浮点类型操作混合使用，结果的精度和范围将是未定义的。
+
+一旦输入矩阵（`matrix_a` 或 `matrix_b`）被转换为 `tf32` 精度，具有`precision::tf32` 精度的片段和`load_matrix_sync` 的`float` 数据类型的组合将利用此新功能。两个累加器片段都必须具有浮点数据类型。唯一支持的矩阵大小是 `16x16x8 (m-n-k)`。
+
+片段的元素表示为浮点数，因此从 `element_type<T>` 到 `storage_element_type<T>` 的映射是：
+```C++
+precision::tf32 -> float
+```
+
+### B.24.3. Double Precision
+`Tensor Core` 支持计算能力 8.0 及更高版本的设备上的双精度浮点运算。 要使用这个新功能，必须使用具有 `double` 类型的片段。 `mma_sync` 操作将使用 `.rn`（四舍五入到最接近的偶数）舍入修饰符执行。
+
+### B.24.4. Sub-byte Operations
+ 
+
+
 
 
 
