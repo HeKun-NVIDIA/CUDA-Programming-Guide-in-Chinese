@@ -1280,6 +1280,239 @@ __device__ void foo(unsigned int num) {
 本节中描述的函数可用于向编译器优化器提供附加信息。
 
 ### B.18.1. __builtin_assume_aligned()
+```C++
+void * __builtin_assume_aligned (const void *exp, size_t align)
+```
+允许编译器假定参数指针至少对齐`align`字节，并返回参数指针。
+
+Example:
+```C++
+void *res = __builtin_assume_aligned(ptr, 32); // compiler can assume 'res' is
+                                               // at least 32-byte aligned
+```     
+三个参数版本:
+```C++
+      void * __builtin_assume_aligned (const void *exp, size_t align, 
+                                       <integral type> offset)
+```
+允许编译器假设 `(char *)exp - offset` 至少对齐`align`字节，并返回参数指针。
+
+Example:
+```C++
+void *res = __builtin_assume_aligned(ptr, 32, 8); // compiler can assume 
+                                                  // '(char *)res - 8' is
+                                                  // at least 32-byte aligned.
+```
+
+### B.18.2. __builtin_assume()
+```C++
+void __builtin_assume(bool exp)
+```
+允许编译器假定布尔参数为真。 如果参数在运行时不为真，则行为未定义。 该参数没有被评估，因此任何副作用都将被丢弃。
+
+Example:
+```C++
+     __device__ int get(int *ptr, int idx) {
+       __builtin_assume(idx <= 2);
+       return ptr[idx];
+    }
+```
+
+### B.18.3. __assume()
+```C++
+void __assume(bool exp)
+```
+允许编译器假定布尔参数为真。 如果参数在运行时不为真，则行为未定义。 该参数没有被评估，因此任何副作用都将被丢弃。
+
+Example:
+```C++
+     __device__ int get(int *ptr, int idx) {
+       __assume(idx <= 2);
+       return ptr[idx];
+    }
+```
+
+### B.18.4. __builtin_expect()
+```C++
+long __builtin_expect (long exp, long c)
+```
+向编译器指示期望 `exp == c`，并返回 `exp` 的值。 通常用于向编译器指示分支预测信息。
+```C++
+Example:
+
+    // indicate to the compiler that likely "var == 0", 
+    // so the body of the if-block is unlikely to be
+    // executed at run time.
+    if (__builtin_expect (var, 0))
+      doit ();
+```
+
+### B.18.5. __builtin_unreachable()
+```C++
+void __builtin_unreachable(void)
+```
+向编译器指示控制流永远不会到达调用此函数的位置。 如果控制流在运行时确实到达了这一点，则程序具有未定义的行为。
+```C++
+Example:
+
+    // indicates to the compiler that the default case label is never reached.
+    switch (in) {
+    case 1: return 4;
+    case 2: return 10;
+    default: __builtin_unreachable();
+    }
+```
+
+### B.18.6. Restrictions
+`__assume()` 仅在使用 cl.exe 主机编译器时受支持。 所有平台都支持其他功能，但受以下限制：
+
+* 如果Host编译器支持该函数，则可以从translation unit中的任何位置调用该函数。
+* 否则，必须从 `__device__/__global__` 函数的主体中调用该函数，或者仅在定义 `__CUDA_ARCH__` 宏时调用。
+  
+## B.19. Warp Vote Functions
+```C++
+        int __all_sync(unsigned mask, int predicate);
+        int __any_sync(unsigned mask, int predicate);
+        unsigned __ballot_sync(unsigned mask, int predicate);
+        unsigned __activemask();
+```
+弃用通知：`__any、__all 和 __ballot` 在 CUDA 9.0 中已针对所有设备弃用。
+
+删除通知：当面向具有 7.x 或更高计算能力的设备时，`__any、__all 和 __ballot` 不再可用，而应使用它们的同步变体。
+
+warp 投票功能允许给定 warp 的线程执行缩减和广播操作。 这些函数将来自warp中每个线程的`int predicate`作为输入，并将这些值与零进行比较。 比较的结果通过以下方式之一在 warp 的活动线程中组合（减少），向每个参与线程广播单个返回值：
+* `__all_sync(unsigned mask, predicate):`
+评估`mask`中所有未退出线程的`predicate`，当且仅当`predicate`对所有线程的评估结果都为非零时，才返回非零值。
+* `__any_sync(unsigned mask, predicate):`
+评估`mask`中所有未退出线程的`predicate`，当且仅当`predicate`对其中任何一个的评估为非零时才返回非零。
+* `__ballot_sync(unsigned mask, predicate):`
+当且仅当 `predicate` 对 warp 的第 N 个线程计算为非零并且第 N 个线程处于活动状态时，为 `mask` 中所有未退出的线程计算`predicate`并返回一个其第 N 位被设置的整型。
+* __activemask():
+返回调用 warp 中所有当前活动线程的 32 位整数掩码。如果调用 `__activemask()` 时，warp 中的第 N 条通道处于活动状态，则设置第 N 位。非活动线程由返回掩码中的 0 位表示。退出程序的线程总是被标记为非活动的。请注意，在 `__activemask()` 调用中收敛的线程不能保证在后续指令中收敛，除非这些指令正在同步 warp 内置函数。
+
+#### 注意:
+对于` __all_sync、__any_sync 和 __ballot_sync`，必须传递一个掩码(`mask`)来指定参与调用的线程。 必须为每个参与线程设置一个表示线程通道 ID 的位，以确保它们在硬件执行内部函数之前正确收敛。 掩码中命名的所有活动线程必须使用相同的掩码执行相同的内部线程，否则结果未定义。
+
+## B.20. Warp Match Functions
+`__match_any_sync` 和 `__match_all_sync` 在 warp 中的线程之间执行变量的广播和比较操作。
+
+由计算能力 7.x 或更高版本的设备支持。
+
+### B.20.1. Synopsis
+```C++
+unsigned int __match_any_sync(unsigned mask, T value);
+unsigned int __match_all_sync(unsigned mask, T value, int *pred);
+```
+`T` 可以是 `int、unsigned int、long、unsigned long、long long、unsigned long long、float 或 double`。
+
+### B.20.2. Description
+`__match_sync()`的intrinsics允许在对`mask`中命名的线程进行同步之后，在不同的线程之间广播和比较一个值。
+
+`__match_any_sync`
+
+返回`mask`中具有相同`value`的线程掩码
+
+`__match_all_sync`
+
+如果掩码中的所有线程的`value`值都相同，则返回`mask`； 否则返回 0。 如果 `mask` 中的所有线程具有相同的 `value` 值，则 `pred` 设置为 `true`； 否则predicate设置为假。
+
+新的 `*_sync` 匹配内在函数采用一个掩码，指示参与调用的线程。 必须为每个参与线程设置一个表示线程通道 ID 的位，以确保它们在硬件执行内部函数之前正确收敛。 掩码中命名的所有非退出线程必须使用相同的掩码执行相同的内在函数，否则结果未定义。
+
+## B.21. Warp Reduce Functions
+`__reduce_sync(unsigned mask, T value)` 内在函数在同步 `mask` 中命名的线程后对 `value` 中提供的数据执行归约操作。 `T` 对于 `{add, min, max}` 可以是无符号的或有符号的，并且仅对于 `{and, or, xor}` 操作是无符号的。
+
+由计算能力 8.x 或更高版本的设备支持。
+
+### B.21.1. Synopsis
+```C++
+// add/min/max
+unsigned __reduce_add_sync(unsigned mask, unsigned value);
+unsigned __reduce_min_sync(unsigned mask, unsigned value);
+unsigned __reduce_max_sync(unsigned mask, unsigned value);
+int __reduce_add_sync(unsigned mask, int value);
+int __reduce_min_sync(unsigned mask, int value);
+int __reduce_max_sync(unsigned mask, int value);
+
+// and/or/xor
+unsigned __reduce_and_sync(unsigned mask, unsigned value);
+unsigned __reduce_or_sync(unsigned mask, unsigned value);
+unsigned __reduce_xor_sync(unsigned mask, unsigned value);
+```
+
+### B.21.2. Description
+`__reduce_add_sync、__reduce_min_sync、__reduce_max_sync`
+
+返回对 `mask` 中命名的每个线程在 `value` 中提供的值应用算术加法、最小或最大规约操作的结果。
+
+`__reduce_and_sync、__reduce_or_sync、__reduce_xor_sync`
+
+返回对 `mask` 中命名的每个线程在 `value` 中提供的值应用逻辑 `AND、OR 或 XOR` 规约操作的结果。
+
+## B.22. Warp Shuffle Functions
+`__shfl_sync、__shfl_up_sync、__shfl_down_sync 和 __shfl_xor_sync` 在 [warp](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#simt-architecture) 内的线程之间交换变量。
+
+由计算能力 3.x 或更高版本的设备支持。
+
+弃用通知：`__shfl、__shfl_up、__shfl_down 和 __shfl_xor` 在 CUDA 9.0 中已针对所有设备弃用。
+
+删除通知：当面向具有 7.x 或更高计算能力的设备时，`__shfl、__shfl_up、__shfl_down 和 __shfl_xor` 不再可用，而应使用它们的同步变体。
+#### 作者添加:这里可能大家对接下来会提到的threadIndex, warpIdx, laneIndex会比较混淆.那么我用下图来说明.
+![ID.png](ID.png)
+
+### B.22.1. Synopsis
+```C++
+T __shfl_sync(unsigned mask, T var, int srcLane, int width=warpSize);
+T __shfl_up_sync(unsigned mask, T var, unsigned int delta, int width=warpSize);
+T __shfl_down_sync(unsigned mask, T var, unsigned int delta, int width=warpSize);
+T __shfl_xor_sync(unsigned mask, T var, int laneMask, int width=warpSize);
+```
+`T` 可以是 `int、unsigned int、long、unsigned long、long long、unsigned long long、float 或 double`。 包含 `cuda_fp16.h` 头文件后，`T` 也可以是 `__half 或 __half2`。 同样，包含 cuda_bf16.h 头文件后，T 也可以是 `__nv_bfloat16 或 __nv_bfloat162`。
+
+### B.22.2. Description
+`__shfl_sync()` 内在函数允许在 warp 内的线程之间交换变量，而无需使用共享内存。 交换同时发生在 warp 中的所有活动线程（并以`mask`命名），根据类型移动每个线程 4 或 8 个字节的数据。
+
+warp 中的线程称为通道(lanes)，并且可能具有介于 0 和 warpSize-1（包括）之间的索引。 支持四种源通道(source-lane)寻址模式：
+
+`__shfl_sync()`
+
+从索引通道直接复制
+
+`__shfl_up_sync()`
+
+从相对于调用者 ID 较低的通道复制
+
+`__shfl_down_sync()`
+
+从相对于调用者具有更高 ID 的通道复制
+
+`__shfl_xor_sync()`
+
+基于自身通道 ID 的按位`异或`从通道复制
+
+线程只能从积极参与 `__shfl_sync()` 命令的另一个线程读取数据。 如果目标线程处于非活动状态，则检索到的值未定义。
+
+所有 `__shfl_sync()` 内在函数都采用一个可选的宽度参数，该参数会改变内在函数的行为。 `width` 的值必须是 2 的幂； 如果 `width` 不是 2 的幂，或者是大于 `warpSize` 的数字，则结果未定义。
+
+`__shfl_sync()` 返回由 `srcLane` 给定 ID 的线程持有的 `var` 的值。 如果 `width` 小于 `warpSize`，则 warp 的每个子部分都表现为一个单独的实体，其起始逻辑通道 ID 为 0。如果 `srcLane` 超出范围 [0:width-1]，则返回的值对应于通过 `srcLane` srcLane modulo width所持有的 `var` 的值 （即在同一部分内）。
+#### 作者添加:这里原本中说的有点绕,我还是用图来说明比较好.注意下面四个图均由作者制作,如果有问题,仅仅是作者水平问题-_-!.
+![shfl.png](shfl.png)
+
+`__shfl_up_sync()` 通过从调用者的通道 ID 中减去 delta 来计算源通道 ID。 返回由生成的通道 ID 保存的 `var` 的值：实际上， `var` 通过 `delta` 通道向上移动。 如果宽度小于 `warpSize`，则warp的每个子部分都表现为一个单独的实体，起始逻辑通道 ID 为 0。源通道索引不会环绕宽度值，因此实际上较低的 `delta` 通道将保持不变。
+![shfl_up.png](shfl_up.png)
+
+`__shfl_down_sync()` 通过将 delta 加调用者的通道 ID 来计算源通道 ID。 返回由生成的通道 ID 保存的 `var` 的值：这具有将 `var` 向下移动 `delta` 通道的效果。 如果 `width` 小于 warpSize，则 warp 的每个子部分都表现为一个单独的实体，起始逻辑通道 ID 为 0。至于 `__shfl_up_sync()`，源通道的 ID 号不会环绕宽度值，因此 upper delta lanes将保持不变。
+![shfl_down.png](shfl_down.png)
+
+`__shfl_xor_sync()` 通过对调用者的通道 ID 与 `laneMask` 执行按位异或来计算源通道 ID：返回结果通道 ID 所持有的 `var` 的值。 如果宽度小于warpSize，那么每组宽度连续的线程都能够访问早期线程组中的元素，但是如果它们尝试访问后面线程组中的元素，则将返回他们自己的`var`值。 这种模式实现了一种蝶式寻址模式，例如用于树规约和广播。
+![shufl_xor.png](shufl_xor.png)
+
+
+
+
+
+
+
+
 
 
 
