@@ -517,3 +517,35 @@ template<class T>
 T texCubemap(cudaTextureObject_t texObj, float x, float y, float z);
 ```
 使用纹理坐标 `(x,y,z)` 获取由立方体纹理对象 `texObj` 指定的 CUDA 数组，如[立方体纹理](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cubemap-textures)中所述。
+
+#### B.8.1.18。 texCubemapLod()
+```C++
+template<class T>
+T texCubemapLod(cudaTextureObject_t texObj, float x, float, y, float z,
+                float level）；
+```
+使用[立方体纹理](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cubemap-textures)中描述的纹理坐标 (x,y,z) 从立方体纹理对象 `texObj` 指定的 CUDA 数组中获取。使用的详细级别由`level`给出。
+
+#### B.8.1.19。 texCubemapLayered()
+```C++
+template<class T>
+T texCubemapLayered(cudaTextureObject_t texObj,
+                    float x，float y，float z，int layer）；
+```
+使用纹理坐标 (x,y,z) 和索引层从立方体分层纹理对象 `texObj` 指定的 CUDA 数组中获取，如[立方体分层纹理](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cubemap-layered-textures)中所述。
+
+#### B.8.1.20。 texCubemapLayeredLod()
+```C++
+template<class T>
+T texCubemapLayeredLod(cudaTextureObject_t texObj, float x, float y, float z,
+                       int layer，float level）；
+```
+使用纹理坐标 (x,y,z) 和索引层从立方体分层纹理对象 `texObj` 指定的 CUDA 数组中获取，如[立方体分层纹理](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cubemap-layered-textures)中所述，在细节级别级别。
+
+#### B.8.1.21。 tex2Dgather()
+```C++
+template<class T>
+T tex2Dgather(cudaTextureObject_t texObj,
+              float x，float y，int comp = 0);
+```
+从 2D 纹理对象 `texObj` 指定的 CUDA 数组中获取，使用纹理坐标 x 和 y 以及[纹理采集](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-gather)中描述的 `comp` 参数。
