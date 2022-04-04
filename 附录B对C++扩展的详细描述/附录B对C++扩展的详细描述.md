@@ -2138,11 +2138,1136 @@ CUDA 应用程序通常采用一种***copy and compute*** 模式：
 * [单步异步数据拷贝](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#with-memcpy_async-pipeline-pattern-single)展示了利用单步`cuda::pipeline`的memcpy
 * [多步异步数据拷贝](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#with-memcpy_async-pipeline-pattern-multi)展示了使用`cuda::pipeline`多步memcpy
 
+### B.26.3. Without memcpy_async
+如果没有 `memcpy_async`，复制和计算模式的复制阶段表示为 `shared[local_idx] = global[global_idx]`。 这种全局到共享内存的复制被扩展为从全局内存读取到寄存器，然后从寄存器写入共享内存。
+
+当这种模式出现在迭代算法中时，每个线程块需要在 `shared[local_idx] = global[global_idx]` 分配之后进行同步，以确保在计算阶段开始之前对共享内存的所有写入都已完成。 线程块还需要在计算阶段之后再次同步，以防止在所有线程完成计算之前覆盖共享内存。 此模式在以下代码片段中进行了说明。
+
+```C++
+#include <cooperative_groups.h>
+__device__ void compute(int* global_out, int const* shared_in) {
+    // Computes using all values of current batch from shared memory.
+    // Stores this thread's result back to global memory.
+}
+
+__global__ void without_memcpy_async(int* global_out, int const* global_in, size_t size, size_t batch_sz) {
+  auto grid = cooperative_groups::this_grid();
+  auto block = cooperative_groups::this_thread_block();
+  assert(size == batch_sz * grid.size()); // Exposition: input size fits batch_sz * grid_size
+
+  extern __shared__ int shared[]; // block.size() * sizeof(int) bytes
+
+  size_t local_idx = block.thread_rank();
+
+  for (size_t batch = 0; batch < batch_sz; ++batch) {
+    // Compute the index of the current batch for this block in global memory:
+    size_t block_batch_idx = block.group_index().x * block.size() + grid.size() * batch;
+    size_t global_idx = block_batch_idx + threadIdx.x;
+    shared[local_idx] = global_in[global_idx];
+
+    block.sync(); // Wait for all copies to complete
+
+    compute(global_out + block_batch_idx, shared); // Compute and write result to global memory
+
+    block.sync(); // Wait for compute using shared memory to finish
+  }
+} 
+```
+
+### B.26.4. With memcpy_async
+使用 `memcpy_async`，从全局内存中分配共享内存
+```C++
+shared[local_idx] = global_in[global_idx];
+```
+替换为来自[合作组](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cooperative-groups)的异步复制操作
+
+```C++
+cooperative_groups::memcpy_async(group, shared, global_in + batch_idx, sizeof(int) * block.size());
+```
+
+`cooperation_groups::memcpy_async` API 将 `sizeof(int) * block.size()` 字节从 `global_in + batch_idx` 开始的全局内存复制到共享数据。 这个操作就像由另一个线程执行一样发生，在复制完成后，它与当前线程对`cooperative_groups::wait` 的调用同步。 在复制操作完成之前，修改全局数据或读取写入共享数据会引入数据竞争。
+
+在具有 8.0 或更高计算能力的设备上，从全局内存到共享内存的 `memcpy_async` 传输可以受益于硬件加速，从而避免通过中间寄存器传输数据。
+
+```C++
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
+
+__device__ void compute(int* global_out, int const* shared_in);
+
+__global__ void with_memcpy_async(int* global_out, int const* global_in, size_t size, size_t batch_sz) {
+  auto grid = cooperative_groups::this_grid();
+  auto block = cooperative_groups::this_thread_block();
+  assert(size == batch_sz * grid.size()); // Exposition: input size fits batch_sz * grid_size
+
+  extern __shared__ int shared[]; // block.size() * sizeof(int) bytes
+
+  for (size_t batch = 0; batch < batch_sz; ++batch) {
+    size_t block_batch_idx = block.group_index().x * block.size() + grid.size() * batch;
+    // Whole thread-group cooperatively copies whole batch to shared memory:
+    cooperative_groups::memcpy_async(block, shared, global_in + block_batch_idx, sizeof(int) * block.size());
+
+    cooperative_groups::wait(block); // Joins all threads, waits for all copies to complete
+
+    compute(global_out + block_batch_idx, shared);
+
+    block.sync();
+  }
+}}      
+```
+
+### B.26.5. Asynchronous Data Copies using cuda::barrier
+
+`cuda::memcpy_async` 的 `cuda::barrier` 重载允许使用屏障同步异步数据传输。 此重载执行复制操作，就好像由绑定到屏障的另一个线程执行：在创建时增加当前阶段的预期计数，并在完成复制操作时减少它，这样屏障的阶段只会前进, 当所有参与屏障的线程都已到达，并且绑定到屏障当前阶段的所有 memcpy_async 都已完成时。 以下示例使用block范围的屏障，所有块线程都参与其中，并将等待操作与屏障到达和等待交换，同时提供与前一个示例相同的功能：
+```C++
+#include <cooperative_groups.h>
+#include <cuda/barrier>
+__device__ void compute(int* global_out, int const* shared_in);
+
+__global__ void with_barrier(int* global_out, int const* global_in, size_t size, size_t batch_sz) {
+  auto grid = cooperative_groups::this_grid();
+  auto block = cooperative_groups::this_thread_block();
+  assert(size == batch_sz * grid.size()); // Assume input size fits batch_sz * grid_size
+
+  extern __shared__ int shared[]; // block.size() * sizeof(int) bytes
+
+  // Create a synchronization object (C++20 barrier)
+  __shared__ cuda::barrier<cuda::thread_scope::thread_scope_block> barrier;
+  if (block.thread_rank() == 0) {
+    init(&barrier, block.size()); // Friend function initializes barrier
+  }
+  block.sync();
+
+  for (size_t batch = 0; batch < batch_sz; ++batch) {
+    size_t block_batch_idx = block.group_index().x * block.size() + grid.size() * batch;
+    cuda::memcpy_async(block, shared, global_in + block_batch_idx, sizeof(int) * block.size(), barrier);
+
+    barrier.arrive_and_wait(); // Waits for all copies to complete
+
+    compute(global_out + block_batch_idx, shared);
+
+    block.sync();
+  }
+}
+```
+### B.26.6. Performance Guidance for memcpy_async
+对于计算能力 8.x，pipeline机制在同一 CUDA warp中的 CUDA 线程之间共享。 这种共享会导致成批的 memcpy_async 纠缠在warp中，这可能会在某些情况下影响性能。
+
+本节重点介绍 warp-entanglement 对提交、等待和到达操作的影响。 有关各个操作的概述，请参阅[pipeline接口](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#pipeline-interface)和[pipeline基元接口](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#pipeline-primitives-interface)。
+
+#### B.26.6.1. Alignment
+
+在具有计算能力 8.0 的设备上，`cp.async` 系列指令允许将数据从全局异步复制到共享内存。 这些指令支持一次复制 4、8 和 16 个字节。 如果提供给 `memcpy_async` 的大小是 4、8 或 16 的倍数，并且传递给 `memcpy_async` 的两个指针都对齐到 4、8 或 16 对齐边界，则可以使用专门的异步内存操作来实现 `memcpy_async`。
+
+此外，为了在使用 `memcpy_async` API 时获得最佳性能，需要为共享内存和全局内存对齐 128 字节。
+
+对于指向对齐要求为 1 或 2 的类型值的指针，通常无法证明指针始终对齐到更高的对齐边界。 确定是否可以使用 `cp.async` 指令必须延迟到运行时。 执行这样的运行时对齐检查会增加代码大小并增加运行时开销。
+
+`cuda::aligned_size_t<size_t Align>(size_t size)Shape `可用于证明传递给 `memcpy_async `的两个指针都与 `Align` 边界对齐，并且大小是 `Align` 的倍数，方法是将其作为参数传递，其中 `memcpy_async` API 需要一个 `Shape`：
+```C++
+cuda::memcpy_async(group, dst, src, cuda::aligned_size_t<16>(N * block.size()), pipeline);
+```
+如果验证不正确，则行为未定义。 
+
+#### B.26.6.2. Trivially copyable
+
+在具有计算能力 8.0 的设备上，`cp.async` 系列指令允许将数据从全局异步复制到共享内存。 如果传递给 `memcpy_async` 的指针类型不指向 `TriviallyCopyable` 类型，则需要调用每个输出元素的复制构造函数，并且这些指令不能用于加速 `memcpy_async`。
+
+#### B.26.6.3. Warp Entanglement - Commit
+
+`memcpy_async` 批处理的序列在 warp 中共享。 提交操作被合并，使得对于调用提交操作的所有聚合线程，序列增加一次。 如果warp完全收敛，则序列加1； 如果warp完全发散，则序列增加 32。
+
+* 设 PB 为 warp-shared pipeline的实际批次序列. 
+   
+  `PB = {BP0, BP1, BP2, …, BPL}`
+
+* 令 TB 为线程感知的批次序列，就好像该序列仅由该线程调用提交操作增加。
+
+    `TB = {BT0, BT1, BT2, …, BTL}`
+
+    `pipeline::producer_commit()` 返回值来自线程感知的批处理序列。
+
+* 线程感知序列中的索引始终与实际warp共享序列中的相等或更大的索引对齐。 仅当从聚合线程调用所有提交操作时，序列才相等。
+
+    `BTn ≡ BPm 其中 n <= m`
+
+例如，当warp完全发散时：
+
+* warp共享pipeline的实际顺序是：PB = {0, 1, 2, 3, ..., 31} (PL=31)。
+* 该warp的每个线程的感知顺序将是：
+  * `Thread 0: TB = {0} (TL=0)`
+  * `Thread 1: TB = {0} (TL=0)`
+  
+    `…`
+  * `Thread 31: TB = {0} (TL=0)`
+
+#### B.26.6.4. Warp Entanglement - Wait
+CUDA 线程调用 `pipeline_consumer_wait_prior<N>()` 或 `pipeline::consumer_wait()` 以等待感知序列 TB 中的批次完成。 注意 `pipeline::consumer_wait()` 等价于 `pipeline_consumer_wait_prior<N>()`，其中 `N = PL`。
+
+`pipeline_consumer_wait_prior<N>()` 函数等待实际序列中的批次，至少达到并包括 `PL-N`。 由于 `TL <= PL`，等待批次达到并包括 `PL-N` 包括等待批次 `TL-N`。 因此，当 `TL < PL` 时，线程将无意中等待更多的、更新的批次。
+
+在上面的极端完全发散的warp示例中，每个线程都可以等待所有 32 个批次。
+
+#### B.26.6.5. Warp Entanglement - Arrive-On
+
+`Warp-divergence` 影响到达 `on(bar)` 操作更新障碍的次数。 如果调用 warp 完全收敛，则屏障更新一次。 如果调用 warp 完全发散，则将 32 个单独的更新应用于屏障。
+
+#### B.26.6.6. Keep Commit and Arrive-On Operations Converged
+
+建议提交和到达调用由聚合线程进行：
+
+* 通过保持线程的感知批次序列与实际序列对齐，不要过度等待，并且
+* 以最小化对屏障对象的更新。
 
 
+当这些操作之前的代码分支线程时，应该在调用提交或到达操作之前通过 `__syncwarp` 重新收敛warp。
 
+## B.27. Asynchronous Data Copies using cuda::pipeline
 
+CUDA 提供 `cuda::pipeline` 同步对象来管理异步数据移动并将其与计算重叠。
 
+`cuda::pipeline` 的 API 文档在 [libcudacxx API](https://nvidia.github.io/libcudacxx) 中提供。 流水线对象是一个具有头尾的双端 N 阶段队列，用于按照先进先出 (FIFO) 的顺序处理工作。 管道对象具有以下成员函数来管理管道的各个阶段。
+
+|Pipeline Class Member Function	|Description|
+|----|----|
+|`producer_acquire`|	Acquires an available stage in the pipeline internal queue.|
+|`producer_commit`	|Commits the asynchronous operations issued after the producer_acquire call on the currently acquired stage of the pipeline.|
+|`consumer_wait`|	Wait for completion of all asynchronous operations on the oldest stage of the pipeline.|
+|`consumer_release`|	Release the oldest stage of the pipeline to the pipeline object for reuse. The released stage can be then acquired by the producer.|
+
+### B.27.1. Single-Stage Asynchronous Data Copies using `cuda::pipeline`
+
+在前面的示例中，我们展示了如何使用[`cooperative_groups`](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#collectives-cg-wait)和 [`cuda::barrier`](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#aw-barrier) 进行异步数据传输。 在本节中，我们将使用带有单个阶段的 `cuda::pipeline` API 来调度异步拷贝。 稍后我们将扩展此示例以显示多阶段重叠计算和复制。
+
+```C++
+#include <cooperative_groups/memcpy_async.h>
+#include <cuda/pipeline>
+        
+__device__ void compute(int* global_out, int const* shared_in);
+__global__ void with_single_stage(int* global_out, int const* global_in, size_t size, size_t batch_sz) {
+    auto grid = cooperative_groups::this_grid();
+    auto block = cooperative_groups::this_thread_block();
+    assert(size == batch_sz * grid.size()); // Assume input size fits batch_sz * grid_size
+
+    constexpr size_t stages_count = 1; // Pipeline with one stage
+    // One batch must fit in shared memory:
+    extern __shared__ int shared[];  // block.size() * sizeof(int) bytes
+    
+    // Allocate shared storage for a two-stage cuda::pipeline:
+    __shared__ cuda::pipeline_shared_state<
+        cuda::thread_scope::thread_scope_block,
+        stages_count
+    > shared_state;
+    auto pipeline = cuda::make_pipeline(block, &shared_state);
+
+    // Each thread processes `batch_sz` elements.
+    // Compute offset of the batch `batch` of this thread block in global memory:
+    auto block_batch = [&](size_t batch) -> int {
+      return block.group_index().x * block.size() + grid.size() * batch;
+    };
+
+    for (size_t batch = 0; batch < batch_sz; ++batch) {
+        size_t global_idx = block_batch(batch);
+
+        // Collectively acquire the pipeline head stage from all producer threads:
+        pipeline.producer_acquire();
+
+        // Submit async copies to the pipeline's head stage to be
+        // computed in the next loop iteration
+        cuda::memcpy_async(block, shared, global_in + global_idx, sizeof(int) * block.size(), pipeline);
+        // Collectively commit (advance) the pipeline's head stage
+        pipeline.producer_commit();
+
+        // Collectively wait for the operations committed to the
+        // previous `compute` stage to complete:
+        pipeline.consumer_wait();
+
+        // Computation overlapped with the memcpy_async of the "copy" stage:
+        compute(global_out + global_idx, shared);
+
+        // Collectively release the stage resources
+        pipeline.consumer_release();
+    }
+}
+```
+
+B.27.2. Multi-Stage Asynchronous Data Copies using `cuda::pipeline`
+
+在前面带有`cooperative_groups::wait` 和`cuda::barrier` 的示例中，内核线程立即等待数据传输到共享内存完成。 这避免了数据从全局内存传输到寄存器，但不会通过重叠计算隐藏 `memcpy_async` 操作的延迟。
+
+为此，我们在以下示例中使用 CUDA [***pipeline***](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#pipeline-interface) 功能。 它提供了一种管理 `memcpy_async` 批处理序列的机制，使 CUDA 内核能够将内存传输与计算重叠。 以下示例实现了一个将数据传输与计算重叠的两级管道。 它：
+
+* 初始化管道共享状态（更多下文）
+* 通过为第一批调度 `memcpy_async` 来启动管道。
+* 循环所有批次：它为下一个批次安排 `memcpy_async`，在完成上一个批次的 `memcpy_async` 时阻塞所有线程，然后将上一个批次的计算与下一个批次的内存的异步副本重叠。
+* 最后，它通过对最后一批执行计算来排空管道。
+
+请注意，为了与 `cuda::pipeline` 的互操作性，此处使用来自 `cuda/pipeline` 头文件的 `cuda::memcpy_async`。
+```C++
+#include <cooperative_groups/memcpy_async.h>
+#include <cuda/pipeline>
+
+__device__ void compute(int* global_out, int const* shared_in);
+__global__ void with_staging(int* global_out, int const* global_in, size_t size, size_t batch_sz) {
+    auto grid = cooperative_groups::this_grid();
+    auto block = cooperative_groups::this_thread_block();
+    assert(size == batch_sz * grid.size()); // Assume input size fits batch_sz * grid_size
+
+    constexpr size_t stages_count = 2; // Pipeline with two stages
+    // Two batches must fit in shared memory:
+    extern __shared__ int shared[];  // stages_count * block.size() * sizeof(int) bytes
+    size_t shared_offset[stages_count] = { 0, block.size() }; // Offsets to each batch
+
+    // Allocate shared storage for a two-stage cuda::pipeline:
+    __shared__ cuda::pipeline_shared_state<
+        cuda::thread_scope::thread_scope_block,
+        stages_count
+    > shared_state;
+    auto pipeline = cuda::make_pipeline(block, &shared_state);
+
+    // Each thread processes `batch_sz` elements.
+    // Compute offset of the batch `batch` of this thread block in global memory:
+    auto block_batch = [&](size_t batch) -> int {
+      return block.group_index().x * block.size() + grid.size() * batch;
+    };
+
+    // Initialize first pipeline stage by submitting a `memcpy_async` to fetch a whole batch for the block:
+    if (batch_sz == 0) return;
+    pipeline.producer_acquire();
+    cuda::memcpy_async(block, shared + shared_offset[0], global_in + block_batch(0), sizeof(int) * block.size(), pipeline);
+    pipeline.producer_commit();
+
+    // Pipelined copy/compute:
+    for (size_t batch = 1; batch < batch_sz; ++batch) {
+        // Stage indices for the compute and copy stages:
+        size_t compute_stage_idx = (batch - 1) % 2;
+        size_t copy_stage_idx = batch % 2;
+
+        size_t global_idx = block_batch(batch);
+
+        // Collectively acquire the pipeline head stage from all producer threads:
+        pipeline.producer_acquire();
+
+        // Submit async copies to the pipeline's head stage to be
+        // computed in the next loop iteration
+        cuda::memcpy_async(block, shared + shared_offset[copy_stage_idx], global_in + global_idx, sizeof(int) * block.size(), pipeline);
+        // Collectively commit (advance) the pipeline's head stage
+        pipeline.producer_commit();
+
+        // Collectively wait for the operations commited to the
+        // previous `compute` stage to complete:
+        pipeline.consumer_wait();
+
+        // Computation overlapped with the memcpy_async of the "copy" stage:
+        compute(global_out + global_idx, shared + shared_offset[compute_stage_idx]);
+
+        // Collectively release the stage resources
+        pipeline.consumer_release();
+    }
+
+    // Compute the data fetch by the last iteration
+    pipeline.consumer_wait();
+    compute(global_out + block_batch(batch_sz-1), shared + shared_offset[(batch_sz - 1) % 2]);
+    pipeline.consumer_release();
+}
+```
+
+[***pipeline***](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#pipeline-interface) 对象是一个带有头尾的双端队列，用于按照先进先出 (FIFO) 的顺序处理工作。 生产者线程将工作提交到管道的头部，而消费者线程从管道的尾部提取工作。 在上面的示例中，所有线程都是生产者和消费者线程。 线程首先提交 `memcpy_async` 操作以获取下一批，同时等待上一批 `memcpy_async` 操作完成。
+* 将工作提交到pipeline阶段包括：
+    * 使用 `pipeline.producer_acquire()` 从一组生产者线程中集体获取pipeline头。
+    * 将 `memcpy_async` 操作提交到pipeline头。
+    * 使用 `pipeline.producer_commit()` 共同提交（推进）pipeline头。
+* 使用先前提交的阶段包括：
+    * 共同等待阶段完成，例如，使用 pipeline.consumer_wait() 等待尾部（最旧）阶段。
+    * 使用 `pipeline.consumer_release()` 集体释放阶段。
+
+`cuda::pipeline_shared_state<scope, count> `封装了允许管道处理多达 `count` 个并发阶段的有限资源。 如果所有资源都在使用中，则 `pipeline.producer_acquire()` 会阻塞生产者线程，直到消费者线程释放下一个管道阶段的资源。
+通过将循环的 `prolog` 和 `epilog` 与循环本身合并，可以以更简洁的方式编写此示例，如下所示：
+```C++
+template <size_t stages_count = 2 /* Pipeline with stages_count stages */>
+__global__ void with_staging_unified(int* global_out, int const* global_in, size_t size, size_t batch_sz) {
+    auto grid = cooperative_groups::this_grid();
+    auto block = cooperative_groups::this_thread_block();
+    assert(size == batch_sz * grid.size()); // Assume input size fits batch_sz * grid_size
+
+    extern __shared__ int shared[]; // stages_count * block.size() * sizeof(int) bytes
+    size_t shared_offset[stages_count];
+    for (int s = 0; s < stages_count; ++s) shared_offset[s] = s * block.size();
+
+    __shared__ cuda::pipeline_shared_state<
+        cuda::thread_scope::thread_scope_block,
+        stages_count
+    > shared_state;
+    auto pipeline = cuda::make_pipeline(block, &shared_state);
+
+    auto block_batch = [&](size_t batch) -> int {
+        return block.group_index().x * block.size() + grid.size() * batch;
+    };
+
+    // compute_batch: next batch to process
+    // fetch_batch:  next batch to fetch from global memory
+    for (size_t compute_batch = 0, fetch_batch = 0; compute_batch < batch_sz; ++compute_batch) {
+        // The outer loop iterates over the computation of the batches
+        for (; fetch_batch < batch_sz && fetch_batch < (compute_batch + stages_count); ++fetch_batch) {
+            // This inner loop iterates over the memory transfers, making sure that the pipeline is always full
+            pipeline.producer_acquire();
+            size_t shared_idx = fetch_batch % stages_count;
+            size_t batch_idx = fetch_batch;
+            size_t block_batch_idx = block_batch(batch_idx);
+            cuda::memcpy_async(block, shared + shared_offset[shared_idx], global_in + block_batch_idx, sizeof(int) * block.size(), pipeline);
+            pipeline.producer_commit();
+        }
+        pipeline.consumer_wait();
+        int shared_idx = compute_batch % stages_count;
+        int batch_idx = compute_batch;
+        compute(global_out + block_batch(batch_idx), shared + shared_offset[shared_idx]);
+        pipeline.consumer_release();
+    }
+}
+```
+上面使用的 `pipeline<thread_scope_block>` 原语非常灵活，并且支持我们上面的示例未使用的两个特性：块中的任意线程子集都可以参与管道，并且从参与的线程中，任何子集都可以成为生产者 ，消费者，或两者兼而有之。 在以下示例中，具有“偶数”线程等级的线程是生产者，而其他线程是消费者：
+```C++
+__device__ void compute(int* global_out, int shared_in); 
+
+template <size_t stages_count = 2>
+__global__ void with_specialized_staging_unified(int* global_out, int const* global_in, size_t size, size_t batch_sz) {
+    auto grid = cooperative_groups::this_grid();
+    auto block = cooperative_groups::this_thread_block();
+
+    // In this example, threads with "even" thread rank are producers, while threads with "odd" thread rank are consumers:
+    const cuda::pipeline_role thread_role 
+      = block.thread_rank() % 2 == 0? cuda::pipeline_role::producer : cuda::pipeline_role::consumer;
+
+    // Each thread block only has half of its threads as producers:
+    auto producer_threads = block.size() / 2;
+
+    // Map adjacent even and odd threads to the same id:
+    const int thread_idx = block.thread_rank() / 2;
+
+    auto elements_per_batch = size / batch_sz;
+    auto elements_per_batch_per_block = elements_per_batch / grid.group_dim().x;
+
+    extern __shared__ int shared[]; // stages_count * elements_per_batch_per_block * sizeof(int) bytes
+    size_t shared_offset[stages_count];
+    for (int s = 0; s < stages_count; ++s) shared_offset[s] = s * elements_per_batch_per_block;
+
+    __shared__ cuda::pipeline_shared_state<
+        cuda::thread_scope::thread_scope_block,
+        stages_count
+    > shared_state;
+    cuda::pipeline pipeline = cuda::make_pipeline(block, &shared_state, thread_role);
+
+    // Each thread block processes `batch_sz` batches.
+    // Compute offset of the batch `batch` of this thread block in global memory:
+    auto block_batch = [&](size_t batch) -> int {
+      return elements_per_batch * batch + elements_per_batch_per_block * blockIdx.x;
+    };
+
+    for (size_t compute_batch = 0, fetch_batch = 0; compute_batch < batch_sz; ++compute_batch) {
+        // The outer loop iterates over the computation of the batches
+        for (; fetch_batch < batch_sz && fetch_batch < (compute_batch + stages_count); ++fetch_batch) {
+            // This inner loop iterates over the memory transfers, making sure that the pipeline is always full
+            if (thread_role == cuda::pipeline_role::producer) {
+                // Only the producer threads schedule asynchronous memcpys:
+                pipeline.producer_acquire();
+                size_t shared_idx = fetch_batch % stages_count;
+                size_t batch_idx = fetch_batch;
+                size_t global_batch_idx = block_batch(batch_idx) + thread_idx;
+                size_t shared_batch_idx = shared_offset[shared_idx] + thread_idx;
+                cuda::memcpy_async(shared + shared_batch_idx, global_in + global_batch_idx, sizeof(int), pipeline);
+                pipeline.producer_commit();
+            }
+        }
+        if (thread_role == cuda::pipeline_role::consumer) {
+            // Only the consumer threads compute:
+            pipeline.consumer_wait();
+            size_t shared_idx = compute_batch % stages_count;
+            size_t global_batch_idx = block_batch(compute_batch) + thread_idx;
+            size_t shared_batch_idx = shared_offset[shared_idx] + thread_idx;
+            compute(global_out + global_batch_idx, *(shared + shared_batch_idx));
+            pipeline.consumer_release();
+        }
+    }
+} 
+```
+
+管道执行了一些优化，例如，当所有线程既是生产者又是消费者时，但总的来说，支持所有这些特性的成本不能完全消除。 例如，流水线在共享内存中存储并使用一组屏障进行同步，如果块中的所有线程都参与流水线，这并不是真正必要的。
+
+对于块中的所有线程都参与管道的特殊情况，我们可以通过使用`pipeline<thread_scope_thread>` 结合 `__syncthreads()` 做得比`pipeline<thread_scope_block>` 更好：
+```C++
+template<size_t stages_count>
+__global__ void with_staging_scope_thread(int* global_out, int const* global_in, size_t size, size_t batch_sz) {
+    auto grid = cooperative_groups::this_grid();
+    auto block = cooperative_groups::this_thread_block();
+    auto thread = cooperative_groups::this_thread();
+    assert(size == batch_sz * grid.size()); // Assume input size fits batch_sz * grid_size
+
+    extern __shared__ int shared[]; // stages_count * block.size() * sizeof(int) bytes
+    size_t shared_offset[stages_count];
+    for (int s = 0; s < stages_count; ++s) shared_offset[s] = s * block.size();
+
+    // No pipeline::shared_state needed
+    cuda::pipeline<cuda::thread_scope_thread> pipeline = cuda::make_pipeline();
+
+    auto block_batch = [&](size_t batch) -> int {
+        return block.group_index().x * block.size() + grid.size() * batch;
+    };
+
+    for (size_t compute_batch = 0, fetch_batch = 0; compute_batch < batch_sz; ++compute_batch) {
+        for (; fetch_batch < batch_sz && fetch_batch < (compute_batch + stages_count); ++fetch_batch) {
+            pipeline.producer_acquire();
+            size_t shared_idx = fetch_batch % stages_count;
+            size_t batch_idx = fetch_batch;
+            // Each thread fetches its own data:
+            size_t thread_batch_idx = block_batch(batch_idx) + threadIdx.x;
+            // The copy is performed by a single `thread` and the size of the batch is now that of a single element:
+            cuda::memcpy_async(thread, shared + shared_offset[shared_idx] + threadIdx.x, global_in + thread_batch_idx, sizeof(int), pipeline);
+            pipeline.producer_commit();
+        }
+        pipeline.consumer_wait();
+        block.sync(); // __syncthreads: All memcpy_async of all threads in the block for this stage have completed here
+        int shared_idx = compute_batch % stages_count;
+        int batch_idx = compute_batch;
+        compute(global_out + block_batch(batch_idx), shared + shared_offset[shared_idx]);
+        pipeline.consumer_release();
+    }
+}
+```
+如果计算操作只读取与当前线程在同一 warp 中的其他线程写入的共享内存，则 `__syncwarp()` 就足够了。
+
+### B.27.3. Pipeline Interface
+[libcudacxx](https://nvidia.github.io/libcudacxx) API 文档中提供了 `cuda::memcpy_async` 的完整 API 文档以及一些示例。
+
+`pipeline`接口需要
+
+* 至少 CUDA 11.0，
+* 至少与 ISO C++ 2011 兼容，例如，使用 -std=c++11 编译，
+* `#include <cuda/pipeline>`。
+对于类似 C 的接口，在不兼容 ISO C++ 2011 的情况下进行编译时，请参阅 [Pipeline Primitives Interface](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#pipeline-primitives-interface)。
+
+### B.27.4. Pipeline Primitives Interface
+`pipeline`原语是用于 `memcpy_async` 功能的类 C 接口。 通过包含 <cuda_pipeline.h> 头文件，可以使用`pipeline`原语接口。 在不兼容 ISO C++ 2011 的情况下进行编译时，请包含 `<cuda_pipeline_primitives.h>` 头文件。
+
+### B.27.4.1. memcpy_async Primitive
+
+```C++
+void __pipeline_memcpy_async(void* __restrict__ dst_shared,
+                             const void* __restrict__ src_global,
+                             size_t size_and_align,
+                             size_t zfill=0);
+```
+* 请求提交以下操作以进行异步评估：
+```C++
+  size_t i = 0;
+  for (; i < size_and_align - zfill; ++i) ((char*)dst_shared)[i] = ((char*)src_shared)[i]; /* copy */
+  for (; i < size_and_align; ++i) ((char*)dst_shared)[i] = 0; /* zero-fill */
+```
+* 需要:
+    * `dst_shared` 必须是指向 `memcpy_async` 的共享内存目标的指针。
+    * `src_global` 必须是指向 `memcpy_async` 的全局内存源的指针。
+    * `size_and_align` 必须为 4、8 或 16。
+    * `zfill <= size_and_align`.
+    * `size_and_align` 必须是 `dst_shared` 和 `src_global` 的对齐方式。
+
+* 任何线程在等待 `memcpy_async` 操作完成之前修改源内存或观察目标内存都是一种竞争条件。 在提交 `memcpy_async` 操作和等待其完成之间，以下任何操作都会引入竞争条件：
+    * 从 `dst_shared` 加载。
+    * 存储到 `dst_shared` 或 `src_global。`
+    * 对 `dst_shared` 或 `src_global` 应用原子更新。
+
+#### B.27.4.2. Commit Primitive
+```C++
+void __pipeline_commit();
+```
+* 将提交的 `memcpy_async` 作为当前批次提交到管道。
+
+#### B.27.4.3. Wait Primitive
+```C++
+void __pipeline_wait_prior(size_t N);
+```
+* 令 `{0, 1, 2, ..., L}` 为与给定线程调用 `__pipeline_commit()` 相关联的索引序列。
+* 等待批次完成，至少包括 `L-N`。
+
+#### B.27.4.4. Arrive On Barrier Primitive
+```C++
+void __pipeline_arrive_on(__mbarrier_t* bar);
+```
+* `bar` 指向共享内存中的屏障。
+* 将屏障到达计数加一，当在此调用之前排序的所有 `memcpy_async` 操作已完成时，到达计数减一，因此对到达计数的净影响为零。 用户有责任确保到达计数的增量不超过 `__mbarrier_maximum_count()`。
+
+## B.28. Profiler Counter Function
+每个多处理器都有一组 16 个硬件计数器，应用程序可以通过调用 `__prof_trigger()` 函数用一条指令递增这些计数器。
+```C++
+void __prof_trigger(int counter);
+```
+索引计数器的每个多处理器硬件计数器每warp增加一。 计数器 8 到 15 是保留的，不应由应用程序使用。
+
+计数器 0, 1, ..., 7 的值可以通过 `nvprof --events prof_trigger_0x` 通过 `nvprof` 获得，其中 `x` 为 0, 1, ..., 7。所有计数器在每次内核启动之前都会重置（注意，在收集 计数器，内核启动是同步的，如[主机和设备之间的并发执行](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#concurrent-execution-host-device)中所述）。
+
+## B.29. Assertion
+只有计算能力 2.x 及更高版本的设备才支持Assertion。
+
+```C++
+void assert(int expression);
+```
+如果表达式等于 0，停止内核执行。 如果程序在调试器中运行，则会触发断点，并且调试器可用于检查设备的当前状态。 否则，表达式等于 0 的每个线程在通过 `cudaDeviceSynchronize()`、`cudaStreamSynchronize()` 或 `cudaEventSynchronize()` 与主机同步后向 `stderr` 打印一条消息。 该消息的格式如下：
+```C++
+<filename>:<line number>:<function>:
+block: [blockId.x,blockId.x,blockIdx.z],
+thread: [threadIdx.x,threadIdx.y,threadIdx.z]
+Assertion `<expression>` failed.
+```
+对同一设备进行的任何后续主机端同步调用都将返回 `cudaErrorAssert`。 在调用 `cudaDeviceReset()` 重新初始化设备之前，不能再向该设备发送命令。
+
+如果`expression `不为零，则内核执行不受影响。
+
+例如，源文件 `test.cu `中的以下程序
+```C++
+#include <assert.h>
+
+__global__ void testAssert(void)
+{
+    int is_one = 1;
+    int should_be_one = 0;
+
+    // This will have no effect
+    assert(is_one);
+
+    // This will halt kernel execution
+    assert(should_be_one);
+}
+
+int main(int argc, char* argv[])
+{
+    testAssert<<<1,1>>>();
+    cudaDeviceSynchronize();
+
+    return 0;
+}
+```
+将会输出:
+```
+test.cu:19: void testAssert(): block: [0,0,0], thread: [0,0,0] Assertion `should_be_one` failed.
+```
+Assertion用于调试目的。 它们会影响性能，因此建议在产品代码中禁用它们。 它们可以在编译时通过在包含 `assert.h` 之前定义 `NDEBUG` 预处理器宏来禁用。 请注意，表达式不应是具有副作用的表达式（例如 (`++i > 0`)），否则禁用Assertion将影响代码的功能。
+
+## B.30. Trap function
+
+可以通过从任何设备线程调用 `__trap()` 函数来启动trap操作。 
+```C++
+void __trap();
+```
+内核的执行被中止并在主机程序中引发中断。
+
+## B.31. Breakpoint Function
+可以通过从任何设备线程调用 `__brkpt()` 函数来暂停内核函数的执行。
+```C++
+void __brkpt();
+```
+
+## B.32. Formatted Output
+
+格式化输出仅受计算能力 2.x 及更高版本的设备支持。
+```C++
+int printf(const char *format[, arg, ...]);
+```
+
+将来自内核的格式化输出打印到主机端输出流。
+
+内核中的 `printf() `函数的行为方式与标准 C 库 `printf()` 函数类似，用户可以参考主机系统的手册以获取有关 `printf()` 行为的完整描述。本质上，作为格式传入的字符串输出到主机上的流，在遇到格式说明符的任何地方都会从参数列表中进行替换。下面列出了支持的格式说明符。
+
+`printf()` 命令作为任何其他设备端函数执行：每个线程，并且在调用线程的上下文中。对于多线程内核，这意味着每个线程都将使用指定的线程数据执行对 `printf()` 的直接调用。然后，输出字符串的多个版本将出现在主机流中，每个遇到 `printf()` 的做线程一次。
+
+如果只需要单个输出字符串，则由程序员将输出限制为单个线程（请参阅[`示例`](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#examples-per-thread)以获取说明性示例）。
+
+与返回打印字符数的 C 标准 `printf()` 不同，CUDA 的 `printf()` 返回已解析参数的数量。如果格式字符串后面没有参数，则返回 0。如果格式字符串为 NULL，则返回 -1。如果发生内部错误，则返回 -2。
+
+### B.32.1. Format Specifiers
+对于标准 `printf()`，格式说明符采用以下形式：`%[flags][width][.precision][size]type`
+
+支持以下字段（有关所有行为的完整描述，请参阅广泛可用的文档）：
+
+* Flags: `'#' ' ' '0' '+' '-'`
+* Width: `'*' '0-9'`
+* Precision: `'0-9'`
+* Size: `'h' 'l' 'll'`
+* Type: `"%cdiouxXpeEfgGaAs"`
+  
+请注意，CUDA 的 `printf()` 将接受标志、宽度、精度、大小和类型的任何组合，无论它们总体上是否构成有效的格式说明符。 换句话说，`“%hd”`将被接受，并且 `printf` 将接受参数列表中相应位置的双精度变量。
+
+### B.32.2. Limitations
+`printf()` 输出的最终格式化发生在主机系统上。 这意味着主机系统的编译器和 C 库必须能够理解格式字符串。 已尽一切努力确保 CUDA 的 printf 函数支持的格式说明符形成来自最常见主机编译器的通用子集，但确切的行为将取决于主机操作系统。
+
+如[格式说明符](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#format-specifiers)中所述， `printf()` 将接受有效标志和类型的所有组合。 这是因为它无法确定在最终输出被格式化的主机系统上什么是有效的，什么是无效的。 这样做的效果是，如果程序发出包含无效组合的格式字符串，则输出可能未定义。
+
+除了格式字符串之外，`printf()` 命令最多可以接受 32 个参数。 除此之外的其他参数将被忽略，格式说明符按原样输出。
+
+由于在 64 位 Windows 平台上 `long` 类型的大小不同（在 64 位 Windows 平台上为 4 个字节，在其他 64 位平台上为 8 个字节），在非 Windows 64 位机器上编译的内核但在 win64 机器上运行将看到包含“%ld”的所有格式字符串的损坏输出。 建议编译平台与执行平台相匹配，以确保安全。
+
+`printf()` 的输出缓冲区在内核启动之前设置为固定大小（请参阅[关联的主机端 API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#associated-host-side-api)）。 它是循环的，如果在内核执行期间产生的输出多于缓冲区可以容纳的输出，则旧的输出将被覆盖。 仅当执行以下操作之一时才会刷新：
+* 通过 `<<<>>>` 或 `cuLaunchKernel()` 启动内核（在启动开始时，如果 `CUDA_LAUNCH_BLOCKING` 环境变量设置为 1，也在启动结束时），
+* 通过 `cudaDeviceSynchronize()`、`cuCtxSynchronize()`、`cudaStreamSynchronize()`、`cuStreamSynchronize()`、`cudaEventSynchronize()` 或 `cuEventSynchronize()` 进行同步，
+* 通过任何阻塞版本的 `cudaMemcpy*()` 或 `cuMemcpy*()` 进行内存复制，
+* 通过 `cuModuleLoad()` 或 `cuModuleUnload()` 加载/卸载模块，
+* 通过 `cudaDeviceReset()` 或 `cuCtxDestroy()` 销毁上下文。
+* 在执行由 `cudaStreamAddCallback` 或 `cuStreamAddCallback` 添加的流回调之前。
+
+#### 请注意，程序退出时缓冲区不会自动刷新。 用户必须显式调用 `cudaDeviceReset()` 或 `cuCtxDestroy()`，如下例所示。
+
+`printf() `在内部使用共享数据结构，因此调用 `printf()` 可能会改变线程的执行顺序。 特别是，调用 `printf()` 的线程可能比不调用 `printf()` 的线程花费更长的执行路径，并且该路径长度取决于 `printf()` 的参数。 但是请注意，除了显式 `__syncthreads()` 障碍外，***CUDA 不保证线程执行顺序***，因此无法判断执行顺序是否已被 `printf()` 或硬件中的其他调度行为修改。
+
+### B.32.3. Associated Host-Side API
+以下 API 函数获取和设置用于将 printf() 参数和内部元数据传输到主机的缓冲区大小（默认为 1 兆字节）：
+```C++
+cudaDeviceGetLimit(size_t* size,cudaLimitPrintfFifoSize)
+cudaDeviceSetLimit(cudaLimitPrintfFifoSize, size_t size)
+```
+
+### B.32.4. Examples
+```C++
+#include <stdio.h>
+
+__global__ void helloCUDA(float f)
+{
+    printf("Hello thread %d, f=%f\n", threadIdx.x, f);
+}
+
+int main()
+{
+    helloCUDA<<<1, 5>>>(1.2345f);
+    cudaDeviceSynchronize();
+    return 0;
+}
+```
+上面的代码将会输出:
+```C++
+Hello thread 2, f=1.2345
+Hello thread 1, f=1.2345
+Hello thread 4, f=1.2345
+Hello thread 0, f=1.2345
+Hello thread 3, f=1.2345
+```
+#### 注意每个线程如何遇到 `printf()` 命令，因此输出行数与网格中启动的线程数一样多。 正如预期的那样，全局值（即 `float f`）在所有线程之间是通用的，而局部值（即 `threadIdx.x`）在每个线程中是不同的。
+
+下面的代码:
+```C++
+#include <stdio.h>
+
+__global__ void helloCUDA(float f)
+{
+    if (threadIdx.x == 0)
+        printf("Hello thread %d, f=%f\n", threadIdx.x, f) ;
+}
+
+int main()
+{
+    helloCUDA<<<1, 5>>>(1.2345f);
+    cudaDeviceSynchronize();
+}
+```
+将会输出:
+```C++
+Hello thread 0, f=1.2345
+```
+不言而喻，`if()` 语句限制了哪些线程将调用 `printf`，因此只能看到一行输出。
+
+## B.33. Dynamic Global Memory Allocation and Operations
+动态全局内存分配和操作仅受计算能力 2.x 及更高版本的设备支持。
+```C++
+__host__ __device__ void* malloc(size_t size);
+__device__ void *__nv_aligned_device_malloc(size_t size, size_t align);
+__host__ __device__  void free(void* ptr);
+```
+从全局内存中的固定大小的堆中动态分配和释放内存。
+```C++
+__host__ __device__ void* memcpy(void* dest, const void* src, size_t size);
+```
+从 `src` 指向的内存位置复制 `size` 个字节到 `dest` 指向的内存位置。
+
+```C++
+__host__ __device__ void* memset(void* ptr, int value, size_t size);
+```
+将 `ptr` 指向的内存块的 `size` 字节设置为 `value`（解释为无符号字符）。
+
+CUDA 内核中的 `malloc()` 函数从设备堆中分配至少 `size` 个字节，并返回一个指向已分配内存的指针，如果没有足够的内存来满足请求，则返回 NULL。返回的指针保证与 16 字节边界对齐。
+
+内核中的 CUDA `__nv_aligned_device_malloc()` 函数从设备堆中分配至少 `size` 个字节，并返回一个指向已分配内存的指针，如果内存不足以满足请求的大小或对齐，则返回 NULL。分配内存的地址将是 `align` 的倍数。 `align` 必须是 2 的非零幂。
+
+CUDA 内核中的 `free()` 函数释放 `ptr` 指向的内存，该内存必须由先前对 `malloc()` 或 `__nv_aligned_device_malloc()` 的调用返回。如果 `ptr` 为 NULL，则忽略对 `free()` 的调用。使用相同的 `ptr` 重复调用 `free()` 具有未定义的行为。
+
+给定 CUDA 线程通过 `malloc()` 或 `__nv_aligned_device_malloc()` 分配的内存在 CUDA 上下文的生命周期内保持分配状态，或者直到通过调用 `free()` 显式释放。它可以被任何其他 CUDA 线程使用，即使在随后的内核启动时也是如此。任何 CUDA 线程都可以释放由另一个线程分配的内存，但应注意确保不会多次释放同一指针。
+
+### B.33.1. Heap Memory Allocation
+设备内存堆具有固定大小，必须在任何使用 `malloc()、__nv_aligned_device_malloc() 或 free()` 的程序加载到上下文之前指定该大小。 如果任何程序在没有明确指定堆大小的情况下使用 `malloc() 或 __nv_aligned_device_malloc()` ，则会分配 8 MB 的默认堆。
+
+以下 API 函数获取和设置堆大小：
+* `cudaDeviceGetLimit(size_t* size, cudaLimitMallocHeapSize)`
+* `cudaDeviceSetLimit(cudaLimitMallocHeapSize, size_t size)`
+
+授予的堆大小至少为 `size` 个字节。 `cuCtxGetLimit() 和 cudaDeviceGetLimit()` 返回当前请求的堆大小。
+
+当模块被加载到上下文中时，堆的实际内存分配发生，或者显式地通过 CUDA 驱动程序 API（参见[模块](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#module)），或者隐式地通过 CUDA 运行时 API（参见 [CUDA 运行时](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-c-runtime)）。 如果内存分配失败，模块加载会产生 `CUDA_ERROR_SHARED_OBJECT_INIT_FAILED` 错误。
+
+一旦发生模块加载，堆大小就无法更改，并且不会根据需要动态调整大小。
+
+除了通过主机端 CUDA API 调用（例如 `cudaMalloc()`）分配为设备堆保留的内存之外。
+
+### B.33.2. Interoperability with Host Memory API
+通过设备 `malloc()` 或 `__nv_aligned_device_malloc()` 分配的内存不能使用运行时释放（即，通过从设备内存调用任何空闲内存函数）。
+
+同样，通过运行时分配的内存（即，通过从设备内存调用任何内存分配函数）不能通过 `free()` 释放。
+
+此外，在设备代码中调用 `malloc()` 或 `__nv_aligned_device_malloc()` 分配的内存不能用于任何运行时或驱动程序 API 调用（即 `cudaMemcpy`、`cudaMemset` 等）。
+
+### B.33.3. Examples
+#### B.33.3.1. Per Thread Allocation
+
+```C++
+#include <stdlib.h>
+#include <stdio.h>
+
+__global__ void mallocTest()
+{
+    size_t size = 123;
+    char* ptr = (char*)malloc(size);
+    memset(ptr, 0, size);
+    printf("Thread %d got pointer: %p\n", threadIdx.x, ptr);
+    free(ptr);
+}
+
+int main()
+{
+    // Set a heap size of 128 megabytes. Note that this must
+    // be done before any kernel is launched.
+    cudaDeviceSetLimit(cudaLimitMallocHeapSize, 128*1024*1024);
+    mallocTest<<<1, 5>>>();
+    cudaDeviceSynchronize();
+    return 0;
+}
+```
+上面的代码将会输出:
+```
+Thread 0 got pointer: 00057020
+Thread 1 got pointer: 0005708c
+Thread 2 got pointer: 000570f8
+Thread 3 got pointer: 00057164
+Thread 4 got pointer: 000571d0
+```
+注意每个线程如何遇到 `malloc()` 和 `memset()` 命令，从而接收和初始化自己的分配。 （确切的指针值会有所不同：这些是说明性的。）
+
+#### B.33.3.2. Per Thread Block Allocation
+```C++
+#include <stdlib.h>
+
+__global__ void mallocTest()
+{
+    __shared__ int* data;
+
+    // The first thread in the block does the allocation and then
+    // shares the pointer with all other threads through shared memory,
+    // so that access can easily be coalesced.
+    // 64 bytes per thread are allocated.
+    if (threadIdx.x == 0) {
+        size_t size = blockDim.x * 64;
+        data = (int*)malloc(size);
+    }
+    __syncthreads();
+
+    // Check for failure
+    if (data == NULL)
+        return;
+
+    // Threads index into the memory, ensuring coalescence
+    int* ptr = data;
+    for (int i = 0; i < 64; ++i)
+        ptr[i * blockDim.x + threadIdx.x] = threadIdx.x;
+
+    // Ensure all threads complete before freeing 
+    __syncthreads();
+
+    // Only one thread may free the memory!
+    if (threadIdx.x == 0)
+        free(data);
+}
+
+int main()
+{
+    cudaDeviceSetLimit(cudaLimitMallocHeapSize, 128*1024*1024);
+    mallocTest<<<10, 128>>>();
+    cudaDeviceSynchronize();
+    return 0;
+}
+```
+
+#### B.33.3.3. Allocation Persisting Between Kernel Launches
+```C++
+#include <stdlib.h>
+#include <stdio.h>
+
+#define NUM_BLOCKS 20
+
+__device__ int* dataptr[NUM_BLOCKS]; // Per-block pointer
+
+__global__ void allocmem()
+{
+    // Only the first thread in the block does the allocation
+    // since we want only one allocation per block.
+    if (threadIdx.x == 0)
+        dataptr[blockIdx.x] = (int*)malloc(blockDim.x * 4);
+    __syncthreads();
+
+    // Check for failure
+    if (dataptr[blockIdx.x] == NULL)
+        return;
+
+    // Zero the data with all threads in parallel
+    dataptr[blockIdx.x][threadIdx.x] = 0;
+}
+
+// Simple example: store thread ID into each element
+__global__ void usemem()
+{
+    int* ptr = dataptr[blockIdx.x];
+    if (ptr != NULL)
+        ptr[threadIdx.x] += threadIdx.x;
+}
+
+// Print the content of the buffer before freeing it
+__global__ void freemem()
+{
+    int* ptr = dataptr[blockIdx.x];
+    if (ptr != NULL)
+        printf("Block %d, Thread %d: final value = %d\n",
+                      blockIdx.x, threadIdx.x, ptr[threadIdx.x]);
+
+    // Only free from one thread!
+    if (threadIdx.x == 0)
+        free(ptr);
+}
+
+int main()
+{
+    cudaDeviceSetLimit(cudaLimitMallocHeapSize, 128*1024*1024);
+
+    // Allocate memory
+    allocmem<<< NUM_BLOCKS, 10 >>>();
+
+    // Use memory
+    usemem<<< NUM_BLOCKS, 10 >>>();
+    usemem<<< NUM_BLOCKS, 10 >>>();
+    usemem<<< NUM_BLOCKS, 10 >>>();
+
+    // Free memory
+    freemem<<< NUM_BLOCKS, 10 >>>();
+
+    cudaDeviceSynchronize();
+
+    return 0;
+}
+```
+
+## B.34. Execution Configuration
+对 `__global__ `函数的任何调用都必须指定该调用的执行配置。执行配置定义了将用于在设备上执行功能的网格和块的维度，以及关联的流（有关流的描述，请参见 [CUDA 运行时](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-c-runtime)）。
+
+通过在函数名称和带括号的参数列表之间插入 `<<< Dg, Db, Ns, S >>>` 形式的表达式来指定执行配置，其中：
+
+* Dg 是 dim3 类型（参见 [dim3](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#dim3)），并指定网格的维度和大小，使得 Dg.x * Dg.y * Dg.z 等于正在启动的块数；
+* Db 是 dim3 类型（参见 [dim3](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#dim3)），并指定每个块的维度和大小，使得 Db.x * Db.y * Db.z 等于每个块的线程数；
+* Ns 是 `size_t` 类型，指定除了静态分配的内存之外，每个块动态分配的共享内存中的字节数；这个动态分配的内存被声明为外部数组的任何变量使用，如 [`__shared__`](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared) 中所述； Ns 是一个可选参数，默认为 0；
+* S 是 `cudaStream_t` 类型并指定关联的流； S 是一个可选参数，默认为 0。
+  
+例如，一个函数声明为:
+```C++
+__global__ void Func(float* parameter);
+```
+必须这样调用：
+
+```C++
+Func<<< Dg, Db, Ns >>>(parameter);
+```
+执行配置的参数在实际函数参数之前进行评估。
+
+如果 `Dg` 或 `Db` 大于 [Compute Capabilities](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#compute-capabilities) 中指定的设备允许的最大数，或者 Ns 大于设备上可用的最大共享内存量减去静态分配所需的共享内存量，则函数调用将失败 。
+
+## B.35. Launch Bounds
+
+正如[多处理器级别](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#multiprocessor-level)中详细讨论的那样，内核使用的寄存器越少，多处理器上可能驻留的线程和线程块就越多，这可以提高性能。
+
+因此，编译器使用启发式方法来最大限度地减少寄存器使用量，同时将寄存器溢出（请参阅[设备内存访问](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-memory-accesses)）和指令计数保持在最低限度。 应用程序可以选择性地通过以启动边界的形式向编译器提供附加信息来帮助这些启发式方法，这些信息使用` __global__` 函数定义中的 `__launch_bounds__()` 限定符指定：
+```C++
+__global__ void
+__launch_bounds__(maxThreadsPerBlock, minBlocksPerMultiprocessor)
+MyKernel(...)
+{
+    ...
+}
+```
+* `maxThreadsPerBlock` 指定应用程序启动 `MyKernel()` 的每个块的最大线程数； 它编译为 `.maxntidPTX` 指令；
+* `minBlocksPerMultiprocessor` 是可选的，指定每个多处理器所需的最小驻留块数； 它编译为 .`minnctapersmPTX` 指令。
+  
+如果指定了启动边界，编译器首先从它们推导出内核应该使用的寄存器数量的上限 L，以确保 `maxThreadsPerBlock` 线程的 `minBlocksPerMultiprocessor` 块（或单个块，如果未指定 `minBlocksPerMultiprocessor`）可以驻留在多处理器上（ 有关内核使用的寄存器数量与每个块分配的寄存器数量之间的关系，请参见[硬件多线程](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#hardware-multithreading)）。 然后编译器通过以下方式优化寄存器使用：
+
+* 如果初始寄存器使用量高于 L，编译器会进一步减少它，直到它变得小于或等于 L，通常以更多的本地内存使用或更多的指令为代价；
+* 如果初始寄存器使用率低于 L
+    * 如果指定了 `maxThreadsPerBlock` 而未指定 `minBlocksPerMultiprocessor`，则编译器使用 `maxThreadsPerBlock` 来确定 `n` 和 `n+1` 个常驻块之间转换的寄存器使用阈值（即，当使用较少的寄存器时，可以为额外的常驻块腾出空间，如 [多处理器级别](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#multiprocessor-level)），然后应用与未指定启动边界时类似的启发式方法；
+    * 如果同时指定了 `minBlocksPerMultiprocessor` 和 `maxThreadsPerBlock`，编译器可能会将寄存器使用率提高到 `L` 以减少指令数量并更好地隐藏单线程指令延迟。
+
+如果每个块执行的线程数超过其启动限制 `maxThreadsPerBlock`，则内核将无法启动。
+
+CUDA 内核所需的每个线程资源可能会以不希望的方式限制最大块数量。为了保持对未来硬件和工具包的前向兼容性，并确保至少一个线程块可以在 `SM` 上运行，开发人员应该包含单个参数 `__launch_bounds__(maxThreadsPerBlock)`，它指定内核将启动的最大块大小。不这样做可能会导致“请求启动的资源过多”错误。在某些情况下，提供 `__launch_bounds__(maxThreadsPerBlock,minBlocksPerMultiprocessor)` 的两个参数版本可以提高性能。 `minBlocksPerMultiprocessor` 的正确值应使用详细的每个内核分析来确定。
+
+给定内核的最佳启动范围通常会因主要架构修订版而异。下面的示例代码显示了通常如何使用应用程序兼容性中引入的 `__CUDA_ARCH__` 宏在设备代码中处理此问题
+```C++
+#define THREADS_PER_BLOCK          256
+#if __CUDA_ARCH__ >= 200
+    #define MY_KERNEL_MAX_THREADS  (2 * THREADS_PER_BLOCK)
+    #define MY_KERNEL_MIN_BLOCKS   3
+#else
+    #define MY_KERNEL_MAX_THREADS  THREADS_PER_BLOCK
+    #define MY_KERNEL_MIN_BLOCKS   2
+#endif
+
+// Device code
+__global__ void
+__launch_bounds__(MY_KERNEL_MAX_THREADS, MY_KERNEL_MIN_BLOCKS)
+MyKernel(...)
+{
+    ...
+}
+```
+在使用每个块的最大线程数（指定为 `__launch_bounds__()` 的第一个参数）调用 `MyKernel` 的常见情况下，很容易在执行配置中使用 `MY_KERNEL_MAX_THREADS` 作为每个块的线程数：
+```C++
+// Host code
+MyKernel<<<blocksPerGrid, THREADS_PER_BLOCK>>>(...);
+```
+或者在运行时基于计算能力:
+```C++
+// Host code
+cudaGetDeviceProperties(&deviceProp, device);
+int threadsPerBlock =
+          (deviceProp.major >= 2 ?
+                    2 * THREADS_PER_BLOCK : THREADS_PER_BLOCK);
+MyKernel<<<blocksPerGrid, threadsPerBlock>>>(...);
+```
+寄存器使用情况由 `--ptxas-options=-v` 编译器选项报告。 驻留块的数量可以从 CUDA 分析器报告的占用率中得出（有关占用率的定义，请参阅[设备内存访问](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-memory-accesses)）。
+
+还可以使用 `maxrregcount` 编译器选项控制文件中所有 `__global__` 函数的寄存器使用。 对于具有启动界限的函数，会忽略 `maxrregcount` 的值。
+
+## B.36. #pragma unroll
+默认情况下，编译器展开具有已知行程计数的小循环。 然而，`#pragma unroll` 指令可用于控制任何给定循环的展开。 它必须放在紧接在循环之前，并且仅适用于该循环。 可选地后跟一个整数常量表达式`ICE` 。 如果 `ICE` 不存在，如果其行程计数恒定，则循环将完全展开。 如果 ICE 计算结果为 1，编译器将不会展开循环。 如果 ICE 计算结果为非正整数或大于 int 数据类型可表示的最大值的整数，则该 `pragma` 将被忽略。
+
+示例:
+```C++
+struct S1_t { static const int value = 4; };
+template <int X, typename T2>
+__device__ void foo(int *p1, int *p2) {
+
+// no argument specified, loop will be completely unrolled
+#pragma unroll
+for (int i = 0; i < 12; ++i) 
+  p1[i] += p2[i]*2;
+  
+// unroll value = 8
+#pragma unroll (X+1)
+for (int i = 0; i < 12; ++i) 
+  p1[i] += p2[i]*4;
+
+// unroll value = 1, loop unrolling disabled
+#pragma unroll 1
+for (int i = 0; i < 12; ++i) 
+  p1[i] += p2[i]*8;
+
+// unroll value = 4
+#pragma unroll (T2::value)
+for (int i = 0; i < 12; ++i) 
+  p1[i] += p2[i]*16;
+}
+
+__global__ void bar(int *p1, int *p2) {
+foo<7, S1_t>(p1, p2);
+}
+```
+
+## B.37. SIMD Video Instructions
+`PTX ISA 3.0` 版包括 `SIMD`（Single Instruction, Multiple Data）视频指令，可对 一对16 位值和 四个8 位值进行操作。 这些在计算能力 3.0 的设备上可用。
+
+SIMD 视频指令如下：
+* vadd2, vadd4
+* vsub2, vsub4
+* vavrg2, vavrg4
+* vabsdiff2, vabsdiff4
+* vmin2, vmin4
+* vmax2, vmax4
+* vset2, vset4
+  
+PTX 指令，例如 SIMD 视频指令，可以通过汇编程序 `asm()` 语句包含在 CUDA 程序中。
+
+`asm()` 语句的基本语法是：
+```C++
+asm("template-string" : "constraint"(output) : "constraint"(input)"));
+```
+
+使用 vabsdiff4 PTX 指令的示例是：
+```C++
+asm("vabsdiff4.u32.u32.u32.add" " %0, %1, %2, %3;": "=r" (result):"r" (A), "r" (B), "r" (C));
+```
+这使用 `vabsdiff4` 指令来计算整数四字节 `SIMD` 绝对差的和。 以 `SIMD` 方式为无符号整数 A 和 B 的每个字节计算绝对差值。 可选的累积操作 (`.add`) 被指定为对这些差值求和。
+
+有关在代码中使用汇编语句的详细信息，请参阅文档“Using Inline PTX Assembly in CUDA”。 有关您正在使用的 PTX 版本的 PTX 指令的详细信息，请参阅 PTX ISA 文档（例如“Parallel Thread Execution ISA Version 3.0”）。
+
+## B.38. Diagnostic Pragmas
+
+以下 pragma 可用于控制发出给定诊断消息时使用的错误严重性。
+```C++
+#pragma nv_diag_suppress
+#pragma nv_diag_warning
+#pragma nv_diag_error
+#pragma nv_diag_default
+#pragma nv_diag_once
+```
+
+这些 pragma 的用法具有以下形式：
+```C++
+#pragma nv_diag_xxx error_number, error_number ...
+```
+使用警告消息中显示的错误号指定受影响的诊断。 任何诊断都可能被覆盖为错误，但只有警告的严重性可能被抑制或在升级为错误后恢复为警告。 `nv_diag_default pragma` 用于将诊断的严重性返回到在发出任何 pragma 之前有效的严重性（即，由任何命令行选项修改的消息的正常严重性）。 下面的示例禁止在声明 `foo` 时出现“已声明但从未引用”警告：
+```C++
+#pragma nv_diag_suppress 177
+void foo()
+{
+  int i=0;
+}
+#pragma nv_diag_default 177
+void bar()
+{
+  int i=0;
+}
+```
+以下 pragma 可用于保存和恢复当前诊断 pragma 状态：
+```C++
+#pragma nv_diagnostic push
+#pragma nv_diagnostic pop
+```
+
+示例:
+```C++
+#pragma nv_diagnostic push
+#pragma nv_diag_suppress 177
+void foo()
+{
+  int i=0;
+}
+#pragma nv_diagnostic pop
+void bar()
+{
+  int i=0;
+}
+```
+请注意，编译指示仅影响 `nvcc` CUDA 前端编译器； 它们对主机编译器没有影响。
+
+注意：NVCC 也实现了没有 `nv_` 前缀的诊断 `pragma`，例如 `#pragma diag_suppress`，但它们已被弃用，并将从未来的版本中删除，使用这些诊断 `pragma` 将收到如下消息警告：
+```C++
+pragma "diag_suppress" is deprecated, use "nv_diag_suppress" instead 
+```
 
 
 
