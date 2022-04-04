@@ -2020,6 +2020,123 @@ bar.arrive_and_wait();
 bar.wait(bar.arrive());
 ```
 
+生产者线程计算并填充ready缓冲区，然后它们通过到达填充屏障来表示缓冲区已填充，`filled[i%2].arrive()`。 生产者线程此时不会等待，而是等待下一次迭代的缓冲区（双缓冲）准备好被填充。
+
+消费者线程首先发出两个缓冲区已准备好填充的信号。 消费者线程此时不等待，而是等待此迭代的缓冲区被填充，`filled[i%2].arrive_and_wait()`。 在消费者线程消耗完缓冲区后，它们会发出信号表明缓冲区已准备好再次填充，`ready[i%2].arrive()`，然后等待下一次迭代的缓冲区被填充。
+
+### B.25.6. Early Exit (Dropping out of Participation)
+当参与同步序列的线程必须提前退出该序列时，该线程必须在退出之前显式退出参与。 其余参与线程可以正常进行后续的 `cuda::barrier` 到达和等待操作。
+```C++
+#include <cuda/barrier>
+#include <cooperative_groups.h>
+
+__device__ bool condition_check();
+
+__global__ void early_exit_kernel(int N) {
+    using barrier = cuda::barrier<cuda::thread_scope_block>;
+    __shared__ barrier bar;
+    auto block = cooperative_groups::this_thread_block();
+
+    if (block.thread_rank() == 0)
+        init(&bar , block.size());
+    block.sync();
+
+    for (int i = 0; i < N; ++i) {
+        if (condition_check()) {
+          bar.arrive_and_drop();
+          return;
+        }
+        /* other threads can proceed normally */
+        barrier::arrival_token token = bar.arrive();
+        /* code between arrive and wait */
+        bar.wait(std::move(token)); /* wait for all threads to arrive */
+        /* code after wait */
+    }
+}        
+```
+此操作到达 `cuda::barrier` 以履行参与线程到达当前阶段的义务，然后减少下一阶段的预期到达计数，以便不再期望该线程到达屏障。
+
+### B.25.7. Memory Barrier Primitives Interface
+内存屏障原语是 `cuda::barrier` 功能的 C类型(C-like) 接口。 这些原语可通过包含 `<cuda_awbarrier_primitives.h>` 头文件获得。
+
+#### B.25.7.1. Data Types
+```C++
+typedef /* implementation defined */ __mbarrier_t;
+typedef /* implementation defined */ __mbarrier_token_t;     
+```
+
+#### B.25.7.2. Memory Barrier Primitives API
+```C++
+uint32_t __mbarrier_maximum_count();
+void __mbarrier_init(__mbarrier_t* bar, uint32_t expected_count); 
+```
+
+* `bar` 必须是指向 `__shared__` 内存的指针。
+* `expected_count <= __mbarrier_maximum_count()`
+* 将当前和下一阶段的 `*bar` 预期到达计数初始化为 `expected_count`。
+
+```C++
+void __mbarrier_inval(__mbarrier_t* bar); 
+```
+* `bar` 必须是指向共享内存中的 `mbarrier` 对象的指针。
+* 在重新使用相应的共享内存之前，需要使 `*bar` 无效。
+
+```C++
+__mbarrier_token_t __mbarrier_arrive(__mbarrier_t* bar);    
+```
+* `*bar` 的初始化必须在此调用之前发生。
+* 待处理计数不得为零。
+* 原子地减少屏障当前阶段的挂起计数。
+* 在递减之前返回与屏障状态关联的到达token。
+
+```C++
+__mbarrier_token_t __mbarrier_arrive_and_drop(__mbarrier_t* bar);   
+```
+* `*bar` 的初始化必须在此调用之前发生。
+* 待处理计数不得为零。
+* 原子地减少当前阶段的未决计数和屏障下一阶段的预期计数。
+* 在递减之前返回与屏障状态关联的到达token。
+
+```C++
+bool __mbarrier_test_wait(__mbarrier_t* bar, __mbarrier_token_t token);  
+```
+* token必须与 `*this` 的前一个阶段或当前阶段相关联。
+* 如果 token 与 `*bar` 的前一个阶段相关联，则返回 true，否则返回 false。
+
+```C++
+//Note: This API has been deprecated in CUDA 11.1
+uint32_t __mbarrier_pending_count(__mbarrier_token_t token);    
+```
+
+## B.26. Asynchronous Data Copies
+CUDA 11 引入了带有 `memcpy_async` API 的异步数据操作，以允许设备代码显式管理数据的异步复制。 `memcpy_async` 功能使 CUDA 内核能够将计算与数据传输重叠。
+
+### B.26.1. memcpy_async API
+`memcpy_async` API 在 `cuda/barrier、cuda/pipeline` 和`cooperative_groups/memcpy_async.h` 头文件中提供。
+
+`cuda::memcpy_async` API 与 `cuda::barrier` 和 `cuda::pipeline` 同步原语一起使用，而`cooperative_groups::memcpy_async` 使用 `coopertive_groups::wait` 进行同步。
+
+这些 API 具有非常相似的语义：将对象从 `src` 复制到 `dst`，就好像由另一个线程执行一样，在完成复制后，可以通过 `cuda::pipeline、cuda::barrier` 或`cooperative_groups::wait` 进行同步。
+
+[`libcudacxx`](https://nvidia.github.io/libcudacxx) API 文档和一些示例中提供了 `cuda::barrier` 和 `cuda::pipeline` 的 `cuda::memcpy_async` 重载的完整 API 文档。
+
+`Cooperation_groups::memcpy_async` 的 API 文档在[文档的合作组部分](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cooperative-groups)中提供。
+
+使用 `cuda::barrier` 和 `cuda::pipeline` 的 `memcpy_async` API 需要 7.0 或更高的计算能力。在具有 8.0 或更高计算能力的设备上，从全局内存到共享内存的 `memcpy_async` 操作可以受益于硬件加速。
+
+### B.26.2. Copy and Compute Pattern - Staging Data Through Shared Memory
+
+CUDA 应用程序通常采用一种***copy and compute*** 模式：
+* 从全局内存中获取数据，
+* 将数据存储到共享内存中，
+* 对共享内存数据执行计算，并可能将结果写回全局内存。
+  
+以下部分说明了如何在使用和不使用` memcpy_async` 功能的情况下表达此模式：
+* [没有 memcpy_async](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#without_memcpy_async) 部分介绍了一个不与数据移动重叠计算并使用中间寄存器复制数据的示例。
+* [使用 memcpy_async](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#with_memcpy_async) 部分改进了前面的示例，引入了`cooperation_groups::memcpy_async` 和 `cuda::memcpy_async` API 直接将数据从全局复制到共享内存，而不使用中间寄存器。
+* 使用 `cuda::barrier` 的[异步数据拷贝](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#memcpy_async_barrier)部分显示了带有协作组和屏障的 memcpy
+* [单步异步数据拷贝](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#with-memcpy_async-pipeline-pattern-single)展示了利用单步`cuda::pipeline`的memcpy
+* [多步异步数据拷贝](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#with-memcpy_async-pipeline-pattern-multi)展示了使用`cuda::pipeline`多步memcpy
 
 
 
