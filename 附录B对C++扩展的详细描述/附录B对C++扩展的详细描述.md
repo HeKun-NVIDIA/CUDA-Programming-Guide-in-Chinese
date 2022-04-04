@@ -1862,6 +1862,164 @@ __global__ void simple_sync(int iteration_count) {
     }
 }
 ```
+线程在同步点（`block.sync()`）被阻塞，直到所有线程都到达同步点。 此外，同步点之前发生的内存更新保证对同步点之后块中的所有线程可见，即等效于 `__threadfence_block()` 以及`sync`。
+
+这种模式分为三个阶段：
+
+* 同步前的代码执行将在同步后读取的内存更新。
+* 同步点
+* 同步点之后的代码，具有同步点之前发生的内存更新的可见性。
+
+### B.25.2. Temporal Splitting and Five Stages of Synchronization
+
+使用 std::barrier 的时间分割同步模式如下。
+```C++
+#include <cuda/barrier>
+#include <cooperative_groups.h>
+
+__device__ void compute(float* data, int curr_iteration);
+
+__global__ void split_arrive_wait(int iteration_count, float *data) {
+    using barrier = cuda::barrier<cuda::thread_scope_block>;
+    __shared__  barrier bar;
+    auto block = cooperative_groups::this_thread_block();
+
+    if (block.thread_rank() == 0) {
+        init(&bar, block.size()); // Initialize the barrier with expected arrival count
+    }
+    block.sync();
+
+    for (int curr_iter = 0; curr_iter < iteration_count; ++curr_iter) {
+        /* code before arrive */
+       barrier::arrival_token token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
+       compute(data, curr_iter); 
+       bar.wait(std::move(token)); /* wait for all threads participating in the barrier to complete bar.arrive()*/
+        /* code after wait */
+    }
+} 
+```
+
+在此模式中，同步点 (`block.sync()`) 分为到达点 (`bar.arrive()`) 和等待点 (`bar.wait(std::move(token))`)。 一个线程通过第一次调用 `bar.arrive()` 开始参与 `cuda::barrier`。 当一个线程调用 `bar.wait(std::move(token))` 时，它将被阻塞，直到参与线程完成 `bar.arrive()` 的预期次数，该次数由传递给 `init() `的预期到达计数参数指定。 在参与线程调用 `bar.arrive() `之前发生的内存更新保证在参与线程调用 `bar.wait(std::move(token))` 之后对参与线程可见。 请注意，对 `bar.arrive()` 的调用不会阻塞线程，它可以继续其他不依赖于在其他参与线程调用 `bar.arrive()` 之前发生的内存更新的工作。
+
+`arrive` 然后`wait `模式有五个阶段，可以反复重复：
+
+* 到达之前的代码执行将在等待后读取的内存更新。
+* 带有隐式内存栅栏的到达点（即，相当于 `__threadfence_block()`）。
+* 到达和等待之间的代码。
+* 等待点。
+* 等待后的代码，可以看到在到达之前执行的更新。
+
+### B.25.3. Bootstrap Initialization, Expected Arrival Count, and Participation
+
+必须在任何线程开始参与 `cuda::barrier` 之前进行初始化。
+```C++
+#include <cuda/barrier>
+#include <cooperative_groups.h>
+
+__global__ void init_barrier() { 
+    __shared__ cuda::barrier<cuda::thread_scope_block> bar;
+    auto block = cooperative_groups::this_thread_block();
+
+    if (block.thread_rank() == 0) {
+        init(&bar, block.size()); // Single thread initializes the total expected arrival count.
+    }
+    block.sync();         
+}
+```
+
+在任何线程可以参与 `cuda::barrier` 之前，必须使用带有预期到达计数的 `init()` 初始化屏障，在本例中为 `block.size()`。 必须在任何线程调用 `bar.arrive()` 之前进行初始化。 这带来了一个引导挑战，因为线程必须在参与 `cuda::barrier` 之前进行同步，但是线程正在创建 `cuda::barrier` 以进行同步。 在此示例中，将参与的线程是协作组的一部分，并使用 `block.sync()` 来引导初始化。 在此示例中，整个线程块参与初始化，因此也可以使用 `__syncthreads()`。
+
+`init()` 的第二个参数是预期到达计数，即参与线程在解除对 `bar.wait(std::move(token)` 的调用之前将调用 `bar.arrive()` 的次数 ））。 在前面的示例中，`cuda::barrier` 使用线程块中的线程数进行初始化，即，`cooperative_groups::this_thread_block().size()`，并且线程块中的所有线程都参与了屏障。
+
+`cuda::barrier `可以灵活地指定线程如何参与（拆分到达/等待）以及哪些线程参与。 相比之下，来自协作组的 `this_thread_block.sync()` 或 `__syncthreads()` 适用于整个线程块，而 `__syncwarp(mask)` 是 warp 的指定子集。 如果用户的意图是同步一个完整的线程块或一个完整的warp，出于性能原因，我们建议分别使用 `__syncthreads()` 和 `__syncwarp(mask)`。
+
+### B.25.4. A Barrier's Phase: Arrival, Countdown, Completion, and Reset
+当参与线程调用 `bar.arrive()` 时，`cuda::barrier` 从预期到达计数倒数到零。当倒计时达到零时，当前阶段的 `cuda::barrier` 就完成了。当最后一次调用 `bar.arrive()` 导致倒计时归零时，倒计时会自动自动重置。重置将倒计时分配给预期到达计数，并将 `cuda::barrier` 移动到下一阶段。
+
+从 `token=bar.arrive() `返回的 `cuda::barrier::arrival_token` 类的`token`对象与屏障的当前阶段相关联。当 `cuda::barrier` 处于当前阶段时，对 `bar.wait(std::move(token))` 的调用会阻塞调用线程，即，当与`token`关联的阶段与 `cuda::barrier` 的阶段匹配时。如果在调用 `bar.wait(std::move(token))` 之前阶段提前（因为倒计时达到零），则线程不会阻塞；如果在 `bar.wait(std::move(token))` 中线程被阻塞时阶段提前，则线程被解除阻塞。
+
+了解何时可能发生或不可能发生重置至关重要，尤其是在到达/等待同步模式中。
+
+* 线程对 `token=bar.arrive()` 和 `bar.wait(std::move(token))` 的调用必须按顺序进行，以便 `token=bar.arrive()` 在 `cuda::barrier` 的当前阶段发生，并且 `bar.wait (std::move(token))` 发生在同一阶段或下一阶段。
+* 当屏障的计数器非零时，线程对 `bar.arrive()` 的调用必须发生。 在屏障初始化之后，如果线程对 `bar.arrive()` 的调用导致倒计时达到零，则必须先调用 `bar.wait(std::move(token))`，然后才能将屏障重新用于对 `bar.arrive()` 的后续调用。
+* `bar.wait()` 只能使用当前阶段或前一个阶段的`token`对象调用。 对于`token`对象的任何其他值，行为是未定义的。
+对于简单的到达/等待同步模式，遵守这些使用规则很简单。 
+
+### B.25.5. Spatial Partitioning (also known as Warp Specialization)
+
+线程块可以在空间上进行分区，以便warp专门用于执行独立计算。 空间分区用于生产者或消费者模式，其中一个线程子集产生的数据由另一个（不相交的）线程子集同时使用。
+
+生产者/消费者空间分区模式需要两个单侧同步来管理生产者和消费者之间的数据缓冲区。
+
+
+|Producer	|Consumer|
+|----|----|
+|wait for buffer to be ready to be filled|	signal buffer is ready to be filled|
+|produce data and fill the buffer||	 
+|signal buffer is filled|	wait for buffer to be filled|
+ ||	consume data in filled buffer|
+
+ 生产者线程等待消费者线程发出缓冲区已准备好填充的信号； 但是，消费者线程不会等待此信号。 消费者线程等待生产者线程发出缓冲区已满的信号； 但是，生产者线程不会等待此信号。 对于完整的生产者/消费者并发，此模式具有（至少）双缓冲，其中每个缓冲区需要两个 `cuda::barriers`。
+
+ ```C++
+ #include <cuda/barrier>
+#include <cooperative_groups.h>
+
+using barrier = cuda::barrier<cuda::thread_scope_block>;
+
+__device__ void producer(barrier ready[], barrier filled[], float* buffer, float* in, int N, int buffer_len)
+{
+    for (int i = 0; i < (N/buffer_len); ++i) {
+        ready[i%2].arrive_and_wait(); /* wait for buffer_(i%2) to be ready to be filled */
+        /* produce, i.e., fill in, buffer_(i%2)  */
+        barrier::arrival_token token = filled[i%2].arrive(); /* buffer_(i%2) is filled */
+    }
+}
+
+__device__ void consumer(barrier ready[], barrier filled[], float* buffer, float* out, int N, int buffer_len)
+{
+    barrier::arrival_token token1 = ready[0].arrive(); /* buffer_0 is ready for initial fill */
+    barrier::arrival_token token2 = ready[1].arrive(); /* buffer_1 is ready for initial fill */
+    for (int i = 0; i < (N/buffer_len); ++i) {
+        filled[i%2].arrive_and_wait(); /* wait for buffer_(i%2) to be filled */
+        /* consume buffer_(i%2) */
+        barrier::arrival_token token = ready[i%2].arrive(); /* buffer_(i%2) is ready to be re-filled */
+    }
+}
+
+//N is the total number of float elements in arrays in and out
+__global__ void producer_consumer_pattern(int N, int buffer_len, float* in, float* out) {
+
+    // Shared memory buffer declared below is of size 2 * buffer_len
+    // so that we can alternatively work between two buffers. 
+    // buffer_0 = buffer and buffer_1 = buffer + buffer_len
+    __shared__ extern float buffer[];
+    
+    // bar[0] and bar[1] track if buffers buffer_0 and buffer_1 are ready to be filled, 
+    // while bar[2] and bar[3] track if buffers buffer_0 and buffer_1 are filled-in respectively
+    __shared__ barrier bar[4];
+   
+
+    auto block = cooperative_groups::this_thread_block();
+    if (block.thread_rank() < 4)
+        init(bar + block.thread_rank(), block.size());
+    block.sync();
+
+    if (block.thread_rank() < warpSize)
+        producer(bar, bar+2, buffer, in, N, buffer_len);
+    else
+        consumer(bar, bar+2, buffer, out, N, buffer_len);
+}
+```
+在这个例子中，第一个 warp 被专门为生产者，其余的 warp 被专门为消费者。 所有生产者和消费者线程都参与（调用` bar.arrive()` 或 `bar.arrive_and_wait()`）四个 `cuda::barriers` 中的每一个，因此预期到达计数等于 `block.size()`。
+
+生产者线程等待消费者线程发出可以填充共享内存缓冲区的信号。 为了等待 `cuda::barrier`，生产者线程必须首先到达 `ready[i%2].arrive()` 以获取`token`，然后使用该`token` `ready[i%2].wait(token)`。 为简单起见，`ready[i%2].arrive_and_wait()` 结合了这些操作。
+```C++
+bar.arrive_and_wait();
+/* is equivalent to */
+bar.wait(bar.arrive());
+```
+
 
 
 
