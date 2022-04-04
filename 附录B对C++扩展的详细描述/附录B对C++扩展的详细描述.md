@@ -1713,8 +1713,155 @@ precision::tf32 -> float
 
 ### B.24.4. Sub-byte Operations
  
+Sub-byte `WMMA` 操作提供了一种访问 Tensor Core 的低精度功能的方法。 它们被视为预览功能，即它们的数据结构和 API 可能会发生变化，并且可能与未来版本不兼容。 此功能可通过 `nvcuda::wmma::experimental` 命名空间获得：
+```C++
+namespace experimental { 
+    namespace precision { 
+        struct u4; // 4-bit unsigned 
+        struct s4; // 4-bit signed 
+        struct b1; // 1-bit 
+   } 
+    enum bmmaBitOp {
+        bmmaBitOpXOR = 1, // compute_75 minimum
+        bmmaBitOpAND = 2  // compute_80 minimum
+    };
+    enum bmmaAccumulateOp { bmmaAccumulateOpPOPC = 1 }; 
+} 
+```
 
+对于 4 位精度，可用的 API 保持不变，但您必须指定 `experimental::precision::u4` 或 `experimental::precision::s4` 作为片段数据类型。 由于片段的元素被打包在一起，`num_storage_elements` 将小于该片段的 `num_elements`。 Sub-byte片段的 `num_elements` 变量，因此返回`Sub-byte`类型 `element_type<T>` 的元素数。 对于单位精度也是如此，在这种情况下，从 `element_type<T>` 到 `storage_element_type<T>` 的映射如下：
+```C++
+experimental::precision::u4 -> unsigned (8 elements in 1 storage element) 
+experimental::precision::s4 -> int (8 elements in 1 storage element) 
+experimental::precision::b1 -> unsigned (32 elements in 1 storage element) 
+T -> T  //all other types
+```
 
+Sub-byte片段的允许布局始终为 `matrix_a` 的 `row_major` 和 `matrix_b `的 `col_major`。
+
+对于子字节操作，`load_matrix_sync` 中 `ldm` 的值对于元素类型 `experimental::precision::u4` 和 `Experimental::precision::s4` 应该是 32 的倍数，或者对于元素类型 `experimental::precision::b1` 应该是 128 的倍数 （即，两种情况下都是 16 字节的倍数）。
+
+`bmma_sync`:
+等到所有warp lane都执行了`bmma_sync`，然后执行warp同步位矩阵乘法累加运算`D = (A op B) + C`，其中op由逻辑运算`bmmaBitOp`和`bmmaAccumulateOp`定义的累加组成。 可用的操作有：
+* `bmmaBitOpXOR`，`matrix_a` 中的一行与 `matrix_b` 的 128 位列的 128 位 XOR
+* `bmmaBitOpAND`，`matrix_a` 中的一行与 `matrix_b` 的 128 位列的 128 位 AND，可用于计算能力 8.0 及更高版本的设备。
+
+累积操作始终是 `bmmaAccumulateOpPOPC`，它计算设置位的数量。
+
+### B.24.5. Restrictions
+对于每个主要和次要设备架构，tensor cores所需的特殊格式可能不同。 由于线程仅持有整个矩阵的片段（不透明的架构特定的 ABI 数据结构），因此开发人员不允许对如何将各个参数映射到参与矩阵乘法累加的寄存器做出假设，这使情况变得更加复杂。
+
+由于片段是特定于体系结构的，如果函数已针对不同的链接兼容体系结构编译并链接在一起成为相同的设备可执行文件，则将它们从函数 A 传递到函数 B 是不安全的。 在这种情况下，片段的大小和布局将特定于一种架构，而在另一种架构中使用 `WMMA API` 将导致不正确的结果或潜在的损坏。
+
+片段布局不同的两个链接兼容架构的示例是 sm_70 和 sm_75。
+```C++
+fragA.cu: void foo() { wmma::fragment<...> mat_a; bar(&mat_a); }
+fragB.cu: void bar(wmma::fragment<...> *mat_a) { // operate on mat_a }  
+```
+```C
+// sm_70 fragment layout
+$> nvcc -dc -arch=compute_70 -code=sm_70 fragA.cu -o fragA.o
+// sm_75 fragment layout
+$> nvcc -dc -arch=compute_75 -code=sm_75 fragB.cu -o fragB.o
+// Linking the two together
+$> nvcc -dlink -arch=sm_75 fragA.o fragB.o -o frag.o   
+```
+这种未定义的行为在编译时和运行时的工具也可能无法检测到，因此需要格外小心以确保片段的布局是一致的。 当与既为不同的链接兼容架构构建并期望传递 WMMA 片段的遗留库链接时，最有可能出现这种链接危险。
+
+请注意，在弱链接的情况下（例如，CUDA C++ 内联函数），链接器可能会选择任何可用的函数定义，这可能会导致编译单元之间的隐式传递。
+
+为避免此类问题，矩阵应始终存储到内存中以通过外部接口传输（例如 `wmma::store_matrix_sync(dst, ...)`;），然后可以安全地将其作为指针类型传递给 `bar()` [ 例如 `float *dst`]。
+
+请注意，由于 sm_70 可以在 sm_75 上运行，因此可以将上述示例 sm_75 代码更改为 sm_70 并在 sm_75 上正确运行。 但是，当与其他 sm_75 单独编译的二进制文件链接时，建议在您的应用程序中包含 sm_75 本机代码。
+
+### B.24.6. Element Types & Matrix Sizes
+张量核心支持多种元素类型和矩阵大小。 下表显示了支持的 `matrix_a、matrix_b` 和`accumulator`矩阵的各种组合：
+|Matrix A|	Matrix B|	Accumulator	|Matrix Size (m-n-k)|
+|----|----|----|----|
+|__half	|__half|	float|	16x16x16|
+|__half|	__half|	float|	32x8x16|
+|__half	|__half	|float|	8x32x16|
+|__half	|__half	|__half	|16x16x16|
+|__half	|__half	|__half	|32x8x16|
+|__half	|__half	|__half	|8x32x16|
+|unsigned char	|unsigned char|	int|	16x16x16|
+|unsigned char	|unsigned char|	int	|32x8x16|
+|unsigned char	|unsigned char|	int	|8x32x16|
+|signed char	|signed char|	int	|16x16x16|
+|signed char	|signed char|	int	|32x8x16|
+|signed char	|signed char|	int	|8x32x16|
+
+备用浮点支持：
+
+|Matrix A	|Matrix B|	Accumulator|	Matrix Size (m-n-k)|
+|----|----|----|----|
+|__nv_bfloat16|	__nv_bfloat16|	float|	16x16x16|
+|__nv_bfloat16|	__nv_bfloat16|	float	|32x8x16|
+|__nv_bfloat16|	__nv_bfloat16|	float|	8x32x16|
+|precision::tf32|	precision::tf32	|float|	16x16x8|
+
+双精支持:
+
+|Matrix A	|Matrix B	|Accumulator|	Matrix Size (m-n-k)|
+|----|----|----|----|
+|double|	double|	double|	8x8x4|
+
+对sub-byte操作的实验性支持：
+
+|Matrix A	|Matrix B	|Accumulator	|Matrix Size (m-n-k)|
+|----|----|----|----|
+|precision::u4|	precision::u4|	int|	8x8x32|
+|precision::s4|	precision::s4|	int|	8x8x32|
+|precision::b1|	precision::b1|	int	|8x8x128|
+
+### B.24.7. Example
+以下代码在单个warp中实现 16x16x16 矩阵乘法:
+```C++
+#include <mma.h>
+using namespace nvcuda;
+      
+__global__ void wmma_ker(half *a, half *b, float *c) {
+   // Declare the fragments
+   wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> a_frag;
+   wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b_frag;
+   wmma::fragment<wmma::accumulator, 16, 16, 16, float> c_frag;
+
+   // Initialize the output to zero
+   wmma::fill_fragment(c_frag, 0.0f);
+
+   // Load the inputs
+   wmma::load_matrix_sync(a_frag, a, 16);
+   wmma::load_matrix_sync(b_frag, b, 16);
+
+   // Perform the matrix multiplication
+   wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+
+   // Store the output
+   wmma::store_matrix_sync(c, c_frag, 16, wmma::mem_row_major);
+}   
+```
+
+## B.25. Asynchronous Barrier
+NVIDIA C++ 标准库引入了 [`std::barrier`](https://nvidia.github.io/libcudacxx/extended_api/synchronization_primitives/barrier.html) 的 GPU 实现。 除了 `std::barrier `的实现，该库还提供允许用户指定屏障对象范围的扩展。 屏障 API 范围记录在 [Thread Scopes](https://nvidia.github.io/libcudacxx/extended_api/thread_scopes.html) 下。 计算能力 8.0 或更高版本的设备为屏障操作和这些屏障与 memcpy_async 功能的集成提供硬件加速。 在计算能力低于 8.0 但从 7.0 开始的设备上，这些障碍在没有硬件加速的情况下可用
+
+`nvcuda::experimental::awbarrier`被弃用，取而代之的是`cuda::barrier`。
+
+### B.25.1. Simple Synchronization Pattern
+
+在没有到达/等待障碍的情况下，使用 `__syncthreads()`（同步块中的所有线程）或 `group.sync()` 使用[协作组](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cooperative-groups)时实现同步。
+```C++
+#include <cooperative_groups.h>
+
+__global__ void simple_sync(int iteration_count) {
+    auto block = cooperative_groups::this_thread_block();
+
+    for (int i = 0; i < iteration_count; ++i) {
+        /* code before arrive */
+        block.sync(); /* wait for all threads to arrive here */
+        /* code after wait */
+    }
+}
+```
 
 
 
