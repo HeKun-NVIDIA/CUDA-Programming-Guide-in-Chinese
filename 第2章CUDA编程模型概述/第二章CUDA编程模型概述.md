@@ -4,10 +4,13 @@
 
 #### 本章和下一章中使用的向量加法示例的完整代码可以在 vectorAdd [CUDA示例](https://docs.nvidia.com/cuda/cuda-samples/index.html#vector-addition)中找到。
 
+
 ## 2.1 内核
 CUDA C++ 通过允许程序员定义称为kernel的 C++ 函数来扩展 C++，当调用内核时，由 N 个不同的 CUDA 线程并行执行 N 次，而不是像常规 C++ 函数那样只执行一次。
 
+
 使用 `__global__` 声明说明符定义内核，并使用新的 `<<<...>>>` 执行配置语法指定内核调用的 CUDA 线程数（请参阅 [C++ 语言扩展](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#c-language-extensions)）。 每个执行内核的线程都有一个唯一的线程 ID，可以通过内置变量在内核中访问。
+
 
 作为说明，以下示例代码使用内置变量 `threadIdx` 将两个大小为 N 的向量 A 和 B 相加，并将结果存储到向量 C 中：
 ```C++
@@ -30,6 +33,7 @@ int main()
 这里，执行 VecAdd() 的 N 个线程中的每一个线程都会执行一个加法。
 
 ## 2.2 线程层次
+
 为方便起见，threadIdx 是一个 3 分量向量，因此可以使用一维、二维或三维的线程索引来识别线程，形成一个一维、二维或三维的线程块，称为block。 这提供了一种跨域的元素（例如向量、矩阵或体积）调用计算的方法。
 
 线程的索引和它的线程 ID 以一种直接的方式相互关联：对于一维块，它们是相同的； 对于大小为(Dx, Dy)的二维块，索引为(x, y)的线程的线程ID为(x + y\*Dx)； 对于大小为 (Dx, Dy, Dz) 的三维块，索引为 (x, y, z) 的线程的线程 ID 为 (x + y\*Dx + z\*Dx\*Dy)。
