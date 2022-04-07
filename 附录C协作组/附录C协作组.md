@@ -147,6 +147,34 @@ __global__ void kernel(int *globalInput) {
 相关：`thread_block` 数据类型派生自更通用的 `thread_group` 数据类型，可用于表示更广泛的组类。
 
 
+#### C.4.1.2. Grid Group
+
+该组对象表示在单个网格中启动的所有线程。 除了 `sync()` 之外的 API 始终可用，但要能够跨网格同步，您需要使用协作启动 API。
+
+```C++
+class grid_group;
+grid_group g = this_grid();
+```
+
+公开成员函数：
+
+|`bool is_valid() const:`| Returns whether the grid_group can synchronize|
+|----|----|
+|`void sync() const:`| Synchronize the threads named in the group|
+|`static unsigned long long thread_rank():`| Rank of the calling thread within [0, num_threads)|
+|`static unsigned long long block_rank():`| Rank of the calling block within [0, num_blocks)|
+|`static unsigned long long num_threads(): `|Total number of threads in the group|
+|`static unsigned long long num_blocks():` |Total number of blocks in the group|
+|`static dim3 dim_blocks():` |Dimensions of the launched grid in units of blocks|
+|`static dim3 block_index():` |3-Dimensional index of the block within the launched grid|
+
+旧版成员函数（别名）:
+|`static unsigned long long size():` |Total number of threads in the group (alias of num_threads())|
+|----|----|
+|`static dim3 group_dim():`| Dimensions of the launched grid (alias of dim_blocks())|
+
+
+
 
 
 
