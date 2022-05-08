@@ -26,5 +26,5 @@
 * 附录N  [介绍了统一内存编程模型](附录N_CUDA的统一内存/附录N_CUDA的统一内存.md)
 
 
-From Ken He
+Base QingChuanWS
 
