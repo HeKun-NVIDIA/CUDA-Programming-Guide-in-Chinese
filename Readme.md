@@ -1,5 +1,7 @@
 # CUDA 编程手册
-#### 本项目为CUDA官方手册的中文翻译版，有个人翻译并添加自己的理解。主要介绍CUDA编程模型和接口。
+#### 本项目为CUDA官方手册的中文翻译版。主要介绍CUDA编程模型和接口。
+
+#### 本文在 [原有项目](https://github.com/HeKun-NVIDIA/CUDA-Programming-Guide-in-Chinese) 的基础上加入了个人的理解。
 
 
 ### 结构目录：
@@ -25,5 +27,4 @@
 
 
 From Ken He
-
 
