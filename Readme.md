@@ -1,7 +1,7 @@
 # CUDA 编程手册
 #### 本项目为CUDA官方手册的中文翻译版。主要介绍CUDA编程模型和接口。
 
-#### 本文在 [原有项目](https://github.com/HeKun-NVIDIA/CUDA-Programming-Guide-in-Chinese) 的基础上加入了个人的理解。
+#### 本文在 [原有项目](https://github.com/HeKun-NVIDIA/CUDA-Programming-Guide-in-Chinese) 的基础上修正了语法和关键术语的错误、调整了语序结构并加入了个人的理解。
 
 
 ### 结构目录：
@@ -26,5 +26,5 @@
 * 附录N  [介绍了统一内存编程模型](附录N_CUDA的统一内存/附录N_CUDA的统一内存.md)
 
 
-Base QingChuanWS
+Based QingChuanWS
 
