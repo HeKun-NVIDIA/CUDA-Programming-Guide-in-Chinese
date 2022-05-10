@@ -1,19 +1,19 @@
 # 附录B 对C++扩展的详细描述
 
-## B.1 函数执行空间说明符
-函数执行空间说明符表示函数是在主机上执行还是在设备上执行，以及它是可从主机调用还是从设备调用。
+## B.1 Function Execution Space Specifiers  
+函数执行空间说明符 (`Function Execution Space Specifiers  `) 表示函数是在主机上执行还是在设备上执行，以及它可被主机调用还是可被设备调用。
 
 ### B.1.1 \_\_global\_\_
 `__global__` 执行空间说明符将函数声明为内核。 它的功能是：
 
 * 在设备上执行，
 * 可从主机调用，
-* 可在计算能力为 3.2 或更高的设备调用（有关更多详细信息，请参阅 [CUDA 动态并行性](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-dynamic-parallelism)）。
+* 可在计算能力为 3.2 及以上的设备调用（有关更多详细信息，请参阅 [CUDA 动态并行性](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-dynamic-parallelism)）。
 `__global__` 函数必须具有 void 返回类型，并且不能是类的成员。
 
 对 `__global__` 函数的任何调用都必须指定其执行配置，如[执行配置](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#execution-configuration)中所述。
 
-对 `__global__` 函数的调用是异步的，这意味着它在设备完成执行之前返回。
+对 `__global__` 函数的调用是异步的，这意味着它在设备执行完成之前返回。
 
 ### B.1.2 \_\_device\_\_
 `__device__` 执行空间说明符声明了一个函数：
@@ -27,11 +27,12 @@
 
 * 在主机上执行，
 * 只能从主机调用。
-相当于声明一个函数只带有 `__host__` 执行空间说明符，或者声明它没有任何 `__host__` `、__device__` 或 `__global__` 执行空间说明符； 在任何一种情况下，该函数都仅为主机编译。
+
+声明一个只带有 `__host__` 执行空间说明符的函数等价于声明一个没有 `__host__` `、__device__` 或 `__global__` 执行空间说明符的函数； 在上述任何一种情况下，该函数都仅为主机编译。
 
 `__global__` 和 `__host__` 执行空间说明符不能一起使用。
 
-但是， `__device__` 和 `__host__` 执行空间说明符可以一起使用，在这种情况下，该函数是为主机和设备编译的。 Application Compatibility 中引入的 `__CUDA_ARCH__ `宏可用于区分主机和设备之间的代码路径：
+但是， `__device__` 和 `__host__` 执行空间说明符可以一起使用，在这种情况下，该函数是为主机和设备编译的。 [应用程序兼容性]()中引入的 `__CUDA_ARCH__ `宏可用于区分主机和设备之间的代码路径：
 ```C++
 __host__ __device__ func()
 {
@@ -52,9 +53,9 @@ __host__ __device__ func()
 ```
 
 ### B.1.4 Undefined behavior
-在以下情况下，“跨执行空间”调用具有未定义的行为：
-* `__CUDA_ARCH__` 定义了, 从 `__global__` 、 `__device__` 或 `__host__ __device__` 函数到 `__host__` 函数的调用。
-* `__CUDA_ARCH__` 未定义，从 `__host__` 函数内部调用 `__device__` 函数。
+在以下情况下，“跨执行空间(cross-execution space)”的调用将导致未定义的行为：
+* 对`__CUDA_ARCH__` 定义了，发生了从 `__global__` 、 `__device__` 或 `__host__ __device__` 函数内部对 `__host__` 函数的调用。
+* 对`__CUDA_ARCH__` 未定义，发生了从 `__host__` 函数内部对 `__device__` 函数的调用。
 
 #### B.1.5 `__noinline__` and `__forceinline__`
 
@@ -62,13 +63,13 @@ __host__ __device__ func()
 
 `__noinline__` 函数限定符可用作提示编译器尽可能不要内联函数。
 
-`__forceinline__` 函数限定符可用于强制编译器内联函数。
+`__forceinline__` 函数限定符用于强制编译器内联函数。
 
 `__noinline__` 和 `__forceinline__` 函数限定符不能一起使用，并且两个函数限定符都不能应用于内联函数。
 
 ## B.2 Variable Memory Space Specifiers
 
-变量内存空间说明符表示变量在设备上的内存位置。
+变量内存空间说明符 ( Variable Memory Space Specifiers ) 表示变量在设备上的内存位置。
 
 在设备代码中声明的没有本节中描述的任何 `__device__`、`__shared__` 和 `__constant__` 内存空间说明符的自动变量通常驻留在寄存器中。 但是，在某些情况下，编译器可能会选择将其放置在本地内存中，这可能会产生不利的性能后果，如[设备内存访问](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-memory-accesses)中所述。
 
@@ -131,14 +132,14 @@ __device__ void func()      // __device__ or __global__ function
 ```
 [表 4](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#vector-types__alignment-requirements-in-device-code) 列出了内置向量类型的对齐要求。
 
-### B.2.4. __managed__
+### B.2.4. \__managed__
 `__managed__` 内存空间说明符，可选择与 `__device__` 一起使用，声明一个变量：
 
 * 可以从设备和主机代码中引用，例如，可以获取其地址，也可以直接从设备或主机功能读取或写入。
 * 具有应用程序的生命周期。
 有关更多详细信息，请参阅 [`__managed__` 内存空间](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#managed-specifier)说明符。
 
-### B.2.5. __restrict__
+### B.2.5. \__restrict__
 nvcc 通过 `__restrict__` 关键字支持受限指针。
 
 C99中引入了受限指针，以缓解存在于c类型语言中的混叠问题，这种问题抑制了从代码重新排序到公共子表达式消除等各种优化。
@@ -592,7 +593,7 @@ float4 tex1Dfetch(
    int x);
 ```
 
-#### 作者添加: 因为这里的纹理引用API在当前版本被弃用,所以这里细节不再做过多描述.
+#### 作者添加: 因为这里的纹理引用 API 在当前版本被弃用,所以这里细节不再做过多描述.
 
 
 ## B.9. Surface Functions
@@ -1289,7 +1290,7 @@ Example:
 ```C++
 void *res = __builtin_assume_aligned(ptr, 32); // compiler can assume 'res' is
                                                // at least 32-byte aligned
-```     
+```
 三个参数版本:
 ```C++
       void * __builtin_assume_aligned (const void *exp, size_t align, 
@@ -1712,7 +1713,7 @@ precision::tf32 -> float
 `Tensor Core` 支持计算能力 8.0 及更高版本的设备上的双精度浮点运算。 要使用这个新功能，必须使用具有 `double` 类型的片段。 `mma_sync` 操作将使用 `.rn`（四舍五入到最接近的偶数）舍入修饰符执行。
 
 ### B.24.4. Sub-byte Operations
- 
+
 Sub-byte `WMMA` 操作提供了一种访问 Tensor Core 的低精度功能的方法。 它们被视为预览功能，即它们的数据结构和 API 可能会发生变化，并且可能与未来版本不兼容。 此功能可通过 `nvcuda::wmma::experimental` 命名空间获得：
 ```C++
 namespace experimental { 
@@ -2010,7 +2011,7 @@ __global__ void producer_consumer_pattern(int N, int buffer_len, float* in, floa
     else
         consumer(bar, bar+2, buffer, out, N, buffer_len);
 }
-```
+ ```
 在这个例子中，第一个 warp 被专门为生产者，其余的 warp 被专门为消费者。 所有生产者和消费者线程都参与（调用` bar.arrive()` 或 `bar.arrive_and_wait()`）四个 `cuda::barriers` 中的每一个，因此预期到达计数等于 `block.size()`。
 
 生产者线程等待消费者线程发出可以填充共享内存缓冲区的信号。 为了等待 `cuda::barrier`，生产者线程必须首先到达 `ready[i%2].arrive()` 以获取`token`，然后使用该`token` `ready[i%2].wait(token)`。 为简单起见，`ready[i%2].arrive_and_wait()` 结合了这些操作。
@@ -2131,6 +2132,7 @@ CUDA 应用程序通常采用一种***copy and compute*** 模式：
 * 将数据存储到共享内存中，
 * 对共享内存数据执行计算，并可能将结果写回全局内存。
   
+
 以下部分说明了如何在使用和不使用` memcpy_async` 功能的情况下表达此模式：
 * [没有 memcpy_async](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#without_memcpy_async) 部分介绍了一个不与数据移动重叠计算并使用中间寄存器复制数据的示例。
 * [使用 memcpy_async](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#with_memcpy_async) 部分改进了前面的示例，引入了`cooperation_groups::memcpy_async` 和 `cuda::memcpy_async` API 直接将数据从全局复制到共享内存，而不使用中间寄存器。
@@ -2278,7 +2280,7 @@ cuda::memcpy_async(group, dst, src, cuda::aligned_size_t<16>(N * block.size()), 
 `memcpy_async` 批处理的序列在 warp 中共享。 提交操作被合并，使得对于调用提交操作的所有聚合线程，序列增加一次。 如果warp完全收敛，则序列加1； 如果warp完全发散，则序列增加 32。
 
 * 设 PB 为 warp-shared pipeline的实际批次序列. 
-   
+  
   `PB = {BP0, BP1, BP2, …, BPL}`
 
 * 令 TB 为线程感知的批次序列，就好像该序列仅由该线程调用提交操作增加。
@@ -2792,6 +2794,7 @@ int printf(const char *format[, arg, ...]);
 * Size: `'h' 'l' 'll'`
 * Type: `"%cdiouxXpeEfgGaAs"`
   
+
 请注意，CUDA 的 `printf()` 将接受标志、宽度、精度、大小和类型的任何组合，无论它们总体上是否构成有效的格式说明符。 换句话说，`“%hd”`将被接受，并且 `printf` 将接受参数列表中相应位置的双精度变量。
 
 ### B.32.2. Limitations
@@ -3075,6 +3078,7 @@ int main()
 * Ns 是 `size_t` 类型，指定除了静态分配的内存之外，每个块动态分配的共享内存中的字节数；这个动态分配的内存被声明为外部数组的任何变量使用，如 [`__shared__`](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared) 中所述； Ns 是一个可选参数，默认为 0；
 * S 是 `cudaStream_t` 类型并指定关联的流； S 是一个可选参数，默认为 0。
   
+
 例如，一个函数声明为:
 ```C++
 __global__ void Func(float* parameter);
@@ -3104,6 +3108,7 @@ MyKernel(...)
 * `maxThreadsPerBlock` 指定应用程序启动 `MyKernel()` 的每个块的最大线程数； 它编译为 `.maxntidPTX` 指令；
 * `minBlocksPerMultiprocessor` 是可选的，指定每个多处理器所需的最小驻留块数； 它编译为 .`minnctapersmPTX` 指令。
   
+
 如果指定了启动边界，编译器首先从它们推导出内核应该使用的寄存器数量的上限 L，以确保 `maxThreadsPerBlock` 线程的 `minBlocksPerMultiprocessor` 块（或单个块，如果未指定 `minBlocksPerMultiprocessor`）可以驻留在多处理器上（ 有关内核使用的寄存器数量与每个块分配的寄存器数量之间的关系，请参见[硬件多线程](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#hardware-multithreading)）。 然后编译器通过以下方式优化寄存器使用：
 
 * 如果初始寄存器使用量高于 L，编译器会进一步减少它，直到它变得小于或等于 L，通常以更多的本地内存使用或更多的指令为代价；
@@ -3199,6 +3204,7 @@ SIMD 视频指令如下：
 * vmax2, vmax4
 * vset2, vset4
   
+
 PTX 指令，例如 SIMD 视频指令，可以通过汇编程序 `asm()` 语句包含在 CUDA 程序中。
 
 `asm()` 语句的基本语法是：
@@ -3268,7 +3274,6 @@ void bar()
 ```C++
 pragma "diag_suppress" is deprecated, use "nv_diag_suppress" instead 
 ```
-
 
 
 
