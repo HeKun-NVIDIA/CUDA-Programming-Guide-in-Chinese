@@ -1,4 +1,4 @@
-# 附录B 对C++扩展的详细描述
+# 附录B  C++ 语言扩展
 
 ## B.1 Function Execution Space Specifiers  
 函数执行空间说明符 (`Function Execution Space Specifiers  `) 表示函数是在主机上执行还是在设备上执行，以及它可被主机调用还是可被设备调用。
