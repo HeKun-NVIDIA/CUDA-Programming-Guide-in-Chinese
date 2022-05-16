@@ -1,4 +1,4 @@
-# 附录B  C++ 语言扩展
+# 附录B 对 C++ 语言扩展的详细描述
 
 ## B.1 Function Execution Space Specifiers  
 函数执行空间说明符 (`Function Execution Space Specifiers  `) 表示函数是在主机上执行还是在设备上执行，以及它可被主机调用还是可被设备调用。
@@ -121,7 +121,8 @@ __device__ void func()      // __device__ or __global__ function
     int*   array2 =   (int*)&array1[64];
 }
 ```
-#### 请注意，指针需要与它们指向的类型对齐，因此以下代码不起作用，因为 array1 未对齐到 4 个字节。
+***请注意，指针需要与它所指向的类型对齐，因此，下面的代码无法工作，因为 array1 未对齐到 4 个字节。***
+
 ```C++
 extern __shared__ float array[];
 __device__ void func()      // __device__ or __global__ function
@@ -135,16 +136,17 @@ __device__ void func()      // __device__ or __global__ function
 ### B.2.4. \__managed__
 `__managed__` 内存空间说明符，可选择与 `__device__` 一起使用，声明一个变量：
 
-* 可以从设备和主机代码中引用，例如，可以获取其地址，也可以直接从设备或主机功能读取或写入。
+* 可以从设备和主机代码中引用，例如，可取其地址，也可以直接从设备或主机函数读写。
 * 具有应用程序的生命周期。
+
 有关更多详细信息，请参阅 [`__managed__` 内存空间](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#managed-specifier)说明符。
 
 ### B.2.5. \__restrict__
-nvcc 通过 `__restrict__` 关键字支持受限指针。
+nvcc 通过 `__restrict__` 关键字支持受限 (restricted) 指针。
 
-C99中引入了受限指针，以缓解存在于c类型语言中的混叠问题，这种问题抑制了从代码重新排序到公共子表达式消除等各种优化。
+C99中引入了受限指针，以缓解存在于 C-type 语言中的别名 (aliasing) 问题，它可以禁止从代码重排到公共子表达式消除 (CSE) 等的各种编译器优化。
 
-下面是一个受混叠问题影响的例子，使用受限指针可以帮助编译器减少指令的数量：
+下面是一个别名问题的例子，使用受限指针可以帮助编译器减少指令的数量：
 ```C++
 void foo(const float* a,
          const float* b,
@@ -160,37 +162,68 @@ void foo(const float* a,
 }
 ```
 
-此处的效果是减少了内存访问次数和减少了计算次数。 这通过由于“缓存”负载和常见子表达式而增加的寄存器压力来平衡。
+在 C-type 语言中，指针 *a*、*b* 和 *c* 可能是彼此的别名，所以任何 *c* 的写入操作都可能修改 *a* 或 *b* 的元素 。这意味着为了保证功能正确，编译器无法加载 `a[0]` 和 `b[0]` 到寄存器，进行相乘，然后将结果写回 `c[0]` 和 `c [1]`；这是因为如果 `a[0]`和 `c[0]` 实际上是同一位置，那么对它进行上述优化将导致计算结果就将与抽象执行模型不同。因此编译器不能利用公共子表达式对计算进行优化。同样地，编译器也不能将 `c[4]` 的计算重排到 `c[0]` 和 `c[1]` 的计算的附近，因为`c[4]`前面对 `c[3]` 的写入可能会改变 `c[4]` 的计算的输入。
 
-由于寄存器压力在许多 CUDA 代码中是一个关键问题，因此由于占用率降低，使用受限指针会对 CUDA 代码产生负面性能影响。
+通过创建 *a*、*b* 和 *c* 的受限指针，程序员向编译器断言，这些指针实际上没有别名，在这种情况下，通过 *c* 进行的写操作将永远不会覆盖 *a* 或 *b* 的元素。故函数原型如下:
+
+```c
+void foo(const float* __restrict__ a,
+         const float* __restrict__ b,
+         float* __restrict__ c);
+```
+
+注意，所有的指针参数都需要被限制才能让编译器对代码进行优化。添加了`__restrict__`关键字后，编译器现在可以随意重新排序并执行公共子表达式消除，同时保留与抽象执行模型相同的功能:
+
+```c
+void foo(const float* __restrict__ a,
+         const float* __restrict__ b,
+         float* __restrict__ c)
+{
+    float t0 = a[0];
+    float t1 = b[0];
+    float t2 = t0 * t1;
+    float t3 = a[1];
+    c[0] = t2;
+    c[1] = t2;
+    c[4] = t2;
+    c[2] = t2 * t3;
+    c[3] = t0 * t3;
+    c[5] = t1;
+    ...
+}
+```
+
+这种能力减少了内存访问次数和计算次数。 由于“缓存”的加载和常见子表达式，寄存器增加的压力被平衡了。
+
+由于寄存器压力是许多 CUDA 代码中的一个关键问题，某些情况下由于占用率降低，使用受限指针因此会对 CUDA 代码的性能产生负面影响。
 
 ## B.3. Built-in Vector Types
 
 ### B.3.1. char, short, int, long, longlong, float, double
-这些是从基本整数和浮点类型派生的向量类型。 它们是结构，第一个、第二个、第三个和第四个组件可以分别通过字段 `x、y、z 和 w` 访问。 它们都带有 `make_<type name> `形式的构造函数； 例如，
+以下是从基本整数和浮点类型派生的向量类型。 它们是结构体，同时第一个、第二个、第三个和第四个组件可以分别通过字段 `x、y、z 和 w` 进行访问。 它们都带有 `make_<type name> `形式的构造函数； 例如，
 ```C++
 int2 make_int2(int x, int y);
 ```
-它创建了一个带有 `value(x, y)` 的 `int2` 类型的向量。
+它创建了一个值为 (x, y) 的 `int2` 类型的向量。
 向量类型的对齐要求在下表中有详细说明。
 
 |Type|	Alignment|
 |----|----|
-|char1, uchar1|	1|
-|char2, uchar2|	2|
-|char3, uchar3|	1|
-|char4, uchar4	|4|
-|short1, ushort1|	2|
-|short2, ushort2|	4|
-|short3, ushort3|	2|
-|short4, ushort4|	8|
+|char1,  uchar1|	1|
+|char2,  uchar2|	2|
+|char3,  uchar3|	1|
+|char4,  uchar4	|4|
+|short1,  ushort1|	2|
+|short2,  ushort2|	4|
+|short3,  ushort3|	2|
+|short4,  ushort4|	8|
 |int1, uint1	|4|
 |int2, uint2	|8|
 |int3, uint3	|4|
 |int4, uint4|	16|
-|long1, ulong1|	4 if sizeof(long) is equal to sizeof(int) 8, otherwise|
-|long2, ulong2|	8 if sizeof(long) is equal to sizeof(int), 16, otherwise|
-|long3, ulong3|	4 if sizeof(long) is equal to sizeof(int), 8, otherwise|
+|long1, ulong1| 4  if sizeof(long) is equal to sizeof(int) 8, otherwise |
+|long2, ulong2| 8  if sizeof(long) is equal to sizeof(int), 16, otherwise |
+|long3, ulong3| 4  if sizeof(long) is equal to sizeof(int), 8, otherwise |
 |long4, ulong4	|16|
 |longlong1, ulonglong1|	8|
 |longlong2, ulonglong2	|16|
@@ -206,18 +239,18 @@ int2 make_int2(int x, int y);
 |double4	|16|
 
 ### B.3.2. dim3
-此类型是基于 uint3 的整数向量类型，用于指定维度。 定义 dim3 类型的变量时，任何未指定的组件都将初始化为 1。
+此类型是基于 `uint3` 的整数向量类型，用于指定维度。 定义 dim3 类型的变量时，所有未指定的值都将初始化为 1。
 
 ## B.4. Built-in Variables
 
 ### B.4.1. gridDim
-该变量的类型为 `dim3`（请参阅[ dim3](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#dim3)）并包含网格的尺寸。
+该变量的类型为 `dim3`（请参阅[ dim3](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#dim3)）同时包含网格 (grid) 的维度。
 
 ### B.4.2. blockIdx
-该变量是 `uint3` 类型（请参见 [char、short、int、long、longlong、float、double](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#vector-types)）并包含网格内的块索引。
+该变量是 `uint3` 类型（请参见 [char、short、int、long、longlong、float、double](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#vector-types)）同时包含网格内的块索引。
 
 ### B.4.3. blockDim
-该变量的类型为 `dim3`（请参阅 [dim3](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#dim3)）并包含块的尺寸。
+该变量的类型为 `dim3`（请参阅 [dim3](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#dim3)）同时包含块的维度。
 
 ### B.4.4. threadIdx
 此变量是 `uint3` 类型（请参见 [char、short、int、long、longlong、float、double](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#vector-types) ）并包含块内的线程索引。
@@ -227,9 +260,9 @@ int2 make_int2(int x, int y);
 
 
 ## B.5. Memory Fence Functions
-CUDA 编程模型假设设备具有弱序内存模型，即 CUDA 线程将数据写入共享内存、全局内存、页面锁定主机内存或对等设备的内存的顺序不一定是 观察到数据被另一个 CUDA 或主机线程写入的顺序。 两个线程在没有同步的情况下读取或写入同一内存位置是未定义的行为。
+CUDA 程序模型认为设备具有弱序内存模型，即 CUDA 线程将数据写入共享内存、全局内存、锁页主机内存、相同设备内存的顺序不一定与另一个 CUDA 设备或主机线程观察到的数据写入的顺序相同。
 
-在以下示例中，thread 1 执行 writeXY()，而thread 2 执行 readXY()。
+在以下示例中，thread 1 执行 `writeXY()`，而thread 2 执行 `readXY()`。
 
 ```C++
 __device__ int X = 1, Y = 2;
@@ -247,25 +280,26 @@ __device__ void readXY()
 }
 ```
 
-两个线程同时从相同的内存位置 X 和 Y 读取和写入。 任何数据竞争都是未定义的行为，并且没有定义的语义。 A 和 B 的结果值可以是任何值。
+两个线程从相同的内存位置  X 和 Y 同时读取和写入。 这种数据竞争都是未定义的行为，并且没有定义的语义。 A 和 B 的结果可以是任何值。
 
-内存栅栏函数可用于强制对内存访问进行一些排序。 内存栅栏功能在强制执行排序的范围上有所不同，但它们独立于访问的内存空间（共享内存、全局内存、页面锁定的主机内存和对等设备的内存）。
+内存栅栏函数可用于强制对内存访问进行排序。 内存栅栏函数在执行排序的作用域上有所不同，但它们独立于访问的内存空间（共享内存、全局内存、锁页主机内存、相同设备内存）。下面介绍集中内存栅栏函数：
 ```C++
 void __threadfence_block();
 ```
-#### 请确保：
-* 线程在调用 __threadfence_block() 之前对所有内存的所有写入都被线程的块中的所有线程观察到. 这发生在调用线程在调用 __threadfence_block() 之后对内存的所有写入之前；
-* 线程在调用 __threadfence_block() 之前对所有内存进行的所有读取都排在线程在调用 __threadfence_block() 之后对所有内存的所有读取之前。
+确保：
+
+* 在线程调用\__threadfence_block() 之前，所有对内存的写入都会被线程块中的其他线程观察到，这发生在调用线程在调用 __threadfence_block() 之后对内存的所有写入之前；
+* 在线程调用 \__threadfence_block() 之前，所有对内存的读取都会排在调用线程在调用 __threadfence_block() 之后对所有内存的读取之前。
 
 ```C++
 void __threadfence();
 ```
-充当调用线程块中所有线程的 `__threadfence_block()` 并且还确保在调用 `__threadfence() `之后调用线程对所有内存的写入不会被设备中的任何线程观察到在任何写入之前发生 调用线程在调用 __threadfence() 之前产生的所有内存。 请注意，要使这种排序保证为真，观察线程必须真正观察内存而不是它的缓存版本； 这可以通过使用 [volatile 限定符](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#volatile-qualifier)中详述的 volatile 关键字来确保。
+作为调用线程块中的所有线程的`__threadfence_block()`，也确保调用线程在调用后不对所有内存进行写操作设备中的任何线程都会观察到`__threadfence()`发生在调用线程在调用`__threadfence()`之前对所有内存进行任何写操作之前。 请注意，要使这种排序保证为真，观察线程必须真正观察内存而不是它的缓存版本； 这可以通过使用 [volatile 限定符](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#volatile-qualifier)中详述的 volatile 关键字来确保。
 
 ```C++
 void __threadfence_system()
 ```
-充当调用线程块中所有线程的 `__threadfence_block()`，并确保设备中的所有线程、主机线程和所有线程在调用 `__threadfence_system()` 之前对调用线程所做的所有内存的所有写入都被观察到 对等设备中的线程在调用 `__threadfence_system()` 之后调用线程对所有内存的所有写入之前发生。
+作为调用线程块中的所有线程`__threadfence_block()`，还确保在调用之前所有的写操作都被调用线程写入所有内存`__threadfence_system()`被设备中的所有线程、主机线程和对等设备中的所有线程观察到，在调用线程在调用`__threadfence_system()`之后对所有内存进行所有写操作之前发生。
 
 `__threadfence_system()` 仅受计算能力 2.x 及更高版本的设备支持。
 
@@ -287,18 +321,19 @@ __device__ void readXY()
     int A = X;
 }
 ```
-对于此代码，可以观察到以下结果：
+对于此代码，我们可以观察到的是以下结果：
 * A 等于 1，B 等于 2，
 * A 等于 10，B 等于 2，
 * A 等于 10，B 等于 20。
+* A 等于 1，B 等于 20。×
 
-第四种结果是不可能的，因为第一次写入必须在第二次写入之前可见。 如果线程 1 和 2 属于同一个块，使用 __threadfence_block() 就足够了。 如果线程 1 和 2 不属于同一个块，如果它们是来自同一设备的 CUDA 线程，则必须使用 __threadfence()，如果它们是来自两个不同设备的 CUDA 线程，则必须使用 __threadfence_system()。
+第四种结果是不可能的，因为第一次写入必须对第二次写入是可见的。 如果线程 1 和 2 属于同一个块，使用 `__threadfence_block()` 就足够了。 如果线程 1 和 2 不属于同一个块，同时它们是来自同一设备的 CUDA 线程，则必须使用 `__threadfence()`，如果它们是来自两个不同设备的 CUDA 线程，则必须使用 `__threadfence_system()`。
 
-一个常见的用例是当线程消耗由其他线程产生的一些数据时，如以下内核代码示例所示，该内核在一次调用中计算 N 个数字的数组的总和。 每个块首先对数组的一个子集求和，并将结果存储在全局内存中。 当所有块都完成后，最后一个完成的块从全局内存中读取这些部分和中的每一个，并将它们相加以获得最终结果。 为了确定哪个块最后完成，每个块自动递增一个计数器以表示它已完成计算和存储其部分和（请参阅[原子函数](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#atomic-functions)关于原子函数）。 最后一个块是接收等于 `gridDim.x-1` 的计数器值的块。 如果在存储部分和和递增计数器之间没有设置栅栏，则计数器可能会在存储部分和之前递增，因此可能会到达 gridDim.x-1 并让最后一个块在实际更新之前在Global Memory中开始读取部分和 。
+一个常见的用例是当线程消费由其他线程生产的数据时，如以下内核代码示例所示，该内核在一次调用中计算 N 个数字的数组的总和。 每个块首先对数组的一个子集求和，并将结果存储在全局内存中。 当所有块都完成后，最后一个完成的块从全局内存中读取这些部分和，并将它们相加以获得最终结果。 为了确定哪个块最后完成，每个块自动递增一个计数器以表示它已完成计算和存储其部分和（请参阅[原子函数](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#atomic-functions)关于原子函数）。 最后一个块是接收等于 `gridDim.x-1` 的计数器值的块。 如果在存储部分和和递增计数器之间没有设置栅栏，则计数器可能会在存储部分和之前递增，因此可能会到达 gridDim.x-1 并让最后一个块在实际更新之前在Global Memory中开始读取部分和 。
 
-#### 作者添加: 开发者指南中原文介绍threadfence的时候,比较长比较绕,可能对于新手开发朋友来说比较难理解.作者觉得,可以简单的理解为一种等待行为.让Warp中线程运行到threadfence这里等一下, 不然可能产生上面的还没写完,下面的就开始读的问题. 这种写后读,可能会读到错误的数据.
+***作者添加: 开发者指南中原文介绍threadfence的时候,比较长比较绕,可能对于新手开发朋友来说比较难理解.作者觉得,可以简单的理解为一种等待行为.让Warp中线程运行到threadfence这里等一下, 不然可能产生上面的还没写完,下面的就开始读的问题. 这种写后读,可能会读到错误的数据.***
 
-内存栅栏函数只影响线程内存操作的顺序； 它们不确保这些内存操作对其他线程可见（就像 `__syncthreads()` 对块内的线程所做的那样（请参阅[同步函数](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#synchronization-functions)））。 在下面的代码示例中，通过将结果变量声明为volatile 来确保对结果变量的内存操作的可见性（请参阅[volatile 限定符](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#volatile-qualifier)）。
+内存栅栏函数只影响线程内存操作的顺序； 它们不确保这些内存操作对其他线程可见（就像 `__syncthreads()` 对块内的线程所做的那样（请参阅[同步函数](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#synchronization-functions)））。 在下面的代码示例中，通过将结果变量声明为 `volatile`  来确保对结果变量的内存操作的可见性（请参阅[volatile 限定符](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#volatile-qualifier)）。
 ```C++
 __device__ unsigned int count = 0;
 __shared__ bool isLastBlockDone;
@@ -360,25 +395,25 @@ __global__ void sum(const float* array, unsigned int N,
 ```C
 void __syncthreads();
 ```
-等待直到线程块中的所有线程都达到这一点，并且这些线程在 `__syncthreads()` 之前进行的所有全局和共享内存访问对块中的所有线程都是可见的。
+等待直到线程块中的所有线程都达到这一点，并且这些线程在 `__syncthreads()` 之前进行的所有全局和共享内存访问对块中的其他线程都是可见的。
 
-`__syncthreads()` 用于协调同一块的线程之间的通信。 当块中的某些线程访问共享或全局内存中的相同地址时，对于其中一些内存访问，可能存在先读后写、先读后写或先写后写的风险。 通过在这些访问之间同步线程可以避免这些数据危害。
+`__syncthreads()` 用于协调同一块的线程之间的通信。 当块中的某些线程访问共享或全局内存中的相同地址时，对于其中一些内存访问，可能存在读后写，写后读或写后写的冒险。 通过在这些访问之间同步线程可以避免这些数据冒险。
 
 `__syncthreads()` 允许在条件代码中使用，但前提是条件在整个线程块中的计算结果相同，否则代码执行可能会挂起或产生意外的副作用。
 
-计算能力 2.x 及更高版本的设备支持以下描述的三种 __syncthreads() 变体。
+计算能力 2.x 及更高版本的设备支持以下描述的三种 `__syncthreads()` 变体。
 
-`int __syncthreads_count(int predicate)`与 __syncthreads() 相同，其附加功能是它为块的所有线程评估predicate并返回predicate评估为非零的线程数。
+`int __syncthreads_count(int predicate)`与 `__syncthreads()` 相同，其附加功能是它为块的所有线程评估predicate并返回predicate评估为非零的线程数。
 
 `int __syncthreads_and(int predicate)` 与 __syncthreads() 相同，其附加功能是它为块的所有线程计算predicate，并且当且仅当predicate对所有线程的计算结果都为非零时才返回非零。
 
 `int __syncthreads_or(int predicate)` 与 __syncthreads() 相同，其附加功能是它为块的所有线程评估predicate，并且当且仅当predicate对其中任何一个线程评估为非零时才返回非零。
 
-`void __syncwarp(unsigned mask=0xffffffff)` 将导致正在执行的线程等待，直到 mask 中命名的所有 warp 通道都执行了 __syncwarp()（具有相同的掩码），然后再恢复执行。 掩码中命名的所有未退出线程必须执行具有相同掩码的相应 __syncwarp()，否则结果未定义。
+`void __syncwarp(unsigned mask=0xffffffff)` 将导致正在执行的线程等待，直到 mask 中命名的所有 Warp 通道都执行了 \__syncwarp()（具有相同的掩码），然后再恢复执行。 掩码中命名的所有未退出线程必须执行具有相同掩码的相应 __syncwarp()，否则结果未定义。
 
-执行 __syncwarp() 保证参与屏障的线程之间的内存排序。 因此，warp 中希望通过内存进行通信的线程可以存储到内存，执行 __syncwarp()，然后安全地读取 warp 中其他线程存储的值。
+执行 \__syncwarp() 保证参与屏障的线程之间的内存排序。 因此，warp 中希望通过内存进行通信的线程可以存储到内存，执行 __syncwarp()，然后安全地读取 warp 中其他线程存储的值。
 
-#### 注意：对于 .target sm_6x 或更低版本，mask 中的所有线程在收敛时必须执行相同的 __syncwarp()，并且 mask 中所有值的并集必须等于活动掩码。 否则，行为未定义。
+***注意：对于 .target sm_6x 或更低版本，mask 中的所有线程在收敛时必须执行相同的 __syncwarp()，并且 mask 中所有值的并集必须等于活动掩码。 否则，行为未定义。***
 
 ## B.7. Mathematical Functions
 参考手册列出了设备代码支持的所有 C/C++ 标准库数学函数和仅设备代码支持的所有内部函数。
@@ -389,7 +424,7 @@ void __syncthreads();
 
 纹理对象在 [Texture Object API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-object-api) 中描述
 
-纹理引用在 [[[DEPRECATED]] 纹理引用 API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-reference-api) 中描述
+纹理引用在 [[DEPRECATED] 纹理引用 API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-reference-api) 中描述
 
 纹理提取在[纹理提取](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-fetching)中进行了描述。
 
@@ -401,42 +436,42 @@ T tex1Dfetch(cudaTextureObject_t texObj, int x);
 ```
 从使用整数纹理坐标 x 的一维纹理对象 texObj 指定的线性内存区域中获取。 tex1Dfetch() 仅适用于非归一化坐标，因此仅支持边界和钳位寻址模式。 它不执行任何纹理过滤。 对于整数类型，它可以选择将整数提升为单精度浮点数。
 
-#### B.8.1.2。 tex1D()
+#### B.8.1.2. tex1D()
 ```C
 template<class T>
 T tex1D(cudaTextureObject_t texObj, float x);
 ```
 从使用纹理坐标 x 的一维纹理对象 texObj 指定的 CUDA 数组中获取。
 
-#### B.8.1.3。 tex1DLod()
+#### B.8.1.3. tex1DLod()
 ```C
 template<class T>
 T tex1DLod(cudaTextureObject_t texObj, float x, float level);
 ```
 使用细节级别的纹理坐标 x 从一维纹理对象 texObj 指定的 CUDA 数组中获取。
 
-#### B.8.1.4。 tex1DGrad()
+#### B.8.1.4. tex1DGrad()
 ```C
 template<class T>
 T tex1DGrad(cudaTextureObject_t texObj, float x, float dx, float dy);
 ```
 从使用纹理坐标 x 的一维纹理对象 texObj 指定的 CUDA 数组中获取。细节层次来源于 X 梯度 dx 和 Y 梯度 dy。
 
-#### B.8.1.5。 tex2D()
+#### B.8.1.5. tex2D()
 ```C
 template<class T>
 T tex2D(cudaTextureObject_t texObj, 浮点 x, 浮点 y);
 ```
 从 CUDA 数组或由二维纹理对象 texObj 使用纹理坐标 (x,y) 指定的线性内存区域获取。
 
-#### B.8.1.6。 tex2DLod()
+#### B.8.1.6. tex2DLod()
 ```C
 template<class T>
 tex2DLod(cudaTextureObject_t texObj, float x, float y, float level);
 ```
 从 CUDA 数组或二维纹理对象 texObj 指定的线性内存区域中获取，使用细节级别的纹理坐标 (x,y)。
 
-#### B.8.1.7。 tex2DGrad()
+#### B.8.1.7. tex2DGrad()
 ```C++
 template<class T>
 T tex2DGrad(cudaTextureObject_t texObj, float x, float y,
@@ -444,21 +479,21 @@ T tex2DGrad(cudaTextureObject_t texObj, float x, float y,
 ```
 使用纹理坐标 (x,y) 从二维纹理对象 texObj 指定的 CUDA 数组中获取。细节层次来源于 dx 和 dy 梯度。
 
-#### B.8.1.8。 tex3D()
+#### B.8.1.8. tex3D()
 ```C++
 template<class T>
 T tex3D(cudaTextureObject_t texObj, float x, float y, float z);
 ```
 使用纹理坐标 (x,y,z) 从三维纹理对象 texObj 指定的 CUDA 数组中获取。
 
-#### B.8.1.9。 tex3DLod()
+#### B.8.1.9. tex3DLod()
 ```C++
 template<class T>
 T tex3DLod(cudaTextureObject_t texObj, float x, float y, float z, float level);
 ```
 使用细节级别的纹理坐标 `(x,y,z) `从 CUDA 数组或由三维纹理对象 `texObj` 指定的线性内存区域获取。
 
-#### B.8.1.10。 tex3DGrad()
+#### B.8.1.10. tex3DGrad()
 ```C++
 template<class T>
 T tex3DGrad(cudaTextureObject_t texObj, float x, float y, float z,
@@ -466,21 +501,21 @@ T tex3DGrad(cudaTextureObject_t texObj, float x, float y, float z,
 ```
 从由三维纹理对象 `texObj` 指定的 CUDA 数组中获取，使用纹理坐标 (x,y,z) 在从 `X` 和 `Y` 梯度 `dx` 和 `dy` 派生的细节级别。
 
-#### B.8.1.11。 tex1DLlayered()
+#### B.8.1.11. tex1DLlayered()
 ```C++
 template<class T>
 T tex1DLayered(cudaTextureObject_t texObj, float x, int layer);
 ```
 使用纹理坐标 `x `和索`layer`从一维纹理对象 `texObj` 指定的 CUDA 数组中获取，如分层纹理中所述
 
-#### B.8.1.12。 tex1DLlayeredLod()
+#### B.8.1.12. tex1DLlayeredLod()
 ```C++
 template<class T>
 T tex1DLayeredLod(cudaTextureObject_t texObj, float x, int layer, float level);
 ```
 从使用纹理坐标 `x` 和细节级别级别的图层 `layer` 的一维分层纹理指定的 CUDA 数组中获取。
 
-#### B.8.1.13。 tex1DLlayeredGrad()
+#### B.8.1.13. tex1DLlayeredGrad()
 ```C++
 template<class T>
 T tex1DLayeredGrad(cudaTextureObject_t texObj, float x, int layer,
@@ -488,7 +523,7 @@ T tex1DLayeredGrad(cudaTextureObject_t texObj, float x, int layer,
 ```
 使用纹理坐标 `x` 和从 `dx` 和 `dy` 梯度派生的细节层次从 `layer` 的一维分层纹理指定的 CUDA 数组中获取。
 
-#### B.8.1.14。 tex2DLlayered()
+#### B.8.1.14. tex2DLlayered()
 ```C++
 template<class T>
 T tex2DLayered(cudaTextureObject_t texObj,
@@ -496,7 +531,7 @@ T tex2DLayered(cudaTextureObject_t texObj,
 ```
 使用纹理坐标 `(x,y)` 和索引层从二维纹理对象 `texObj` 指定的 CUDA 数组中获取，如分层纹理中所述。
 
-#### B.8.1.15。 tex2DLlayeredLod()
+#### B.8.1.15. tex2DLlayeredLod()
 ```C++
 template<class T>
 T tex2DLayeredLod(cudaTextureObject_t texObj, float x, float y, int layer,
@@ -504,7 +539,7 @@ T tex2DLayeredLod(cudaTextureObject_t texObj, float x, float y, int layer,
 ```
 使用纹理坐标 `(x,y)` 从 `layer`  的二维分层纹理指定的 CUDA 数组中获取。
 
-#### B.8.1.16。 tex2DLlayeredGrad()
+#### B.8.1.16. tex2DLlayeredGrad()
 ```C++
 template<class T>
 T tex2DLayeredGrad(cudaTextureObject_t texObj, float x, float y, int layer,
@@ -512,14 +547,14 @@ T tex2DLayeredGrad(cudaTextureObject_t texObj, float x, float y, int layer,
 ```
 使用纹理坐标 `(x,y)` 和从 `dx` 和 `dy`  梯度派生的细节层次从 layer  的二维分层纹理指定的 CUDA 数组中获取。
 
-#### B.8.1.17。 texCubemap()
+#### B.8.1.17. texCubemap()
 ```C++
 template<class T>
 T texCubemap(cudaTextureObject_t texObj, float x, float y, float z);
 ```
 使用纹理坐标 `(x,y,z)` 获取由立方体纹理对象 `texObj` 指定的 CUDA 数组，如[立方体纹理](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cubemap-textures)中所述。
 
-#### B.8.1.18。 texCubemapLod()
+#### B.8.1.18. texCubemapLod()
 ```C++
 template<class T>
 T texCubemapLod(cudaTextureObject_t texObj, float x, float, y, float z,
@@ -527,7 +562,7 @@ T texCubemapLod(cudaTextureObject_t texObj, float x, float, y, float z,
 ```
 使用[立方体纹理](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cubemap-textures)中描述的纹理坐标 (x,y,z) 从立方体纹理对象 `texObj` 指定的 CUDA 数组中获取。使用的详细级别由`level`给出。
 
-#### B.8.1.19。 texCubemapLayered()
+#### B.8.1.19. texCubemapLayered()
 ```C++
 template<class T>
 T texCubemapLayered(cudaTextureObject_t texObj,
@@ -535,7 +570,7 @@ T texCubemapLayered(cudaTextureObject_t texObj,
 ```
 使用纹理坐标 (x,y,z) 和索引层从立方体分层纹理对象 `texObj` 指定的 CUDA 数组中获取，如[立方体分层纹理](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cubemap-layered-textures)中所述。
 
-#### B.8.1.20。 texCubemapLayeredLod()
+#### B.8.1.20. texCubemapLayeredLod()
 ```C++
 template<class T>
 T texCubemapLayeredLod(cudaTextureObject_t texObj, float x, float y, float z,
@@ -543,7 +578,7 @@ T texCubemapLayeredLod(cudaTextureObject_t texObj, float x, float y, float z,
 ```
 使用纹理坐标 (x,y,z) 和索引层从立方体分层纹理对象 `texObj` 指定的 CUDA 数组中获取，如[立方体分层纹理](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cubemap-layered-textures)中所述，在细节级别级别。
 
-#### B.8.1.21。 tex2Dgather()
+#### B.8.1.21. tex2Dgather()
 ```C++
 template<class T>
 T tex2Dgather(cudaTextureObject_t texObj,
@@ -949,7 +984,7 @@ void surfCubemapLayeredwrite(Type data,
 ```C++
 T __ldg(const T* address);
 ```
-返回位于地址`address`的 T 类型数据，其中 T 为 `char、signed char、short、int、long、long longunsigned char、unsigned short、unsigned int、unsigned long、unsigned long long、char2、char4、short2、short4、 int2、int4、longlong2uchar2、uchar4、ushort2、ushort4、uint2、uint4、ulonglong2float、float2、float4、double` 或 `double2`. 包含 `cuda_fp16.h` 头文件，T 可以是 `__half` 或 `__half2`。 同样，包含 cuda_bf16.h 头文件后，T 也可以是 `__nv_bfloat16` 或 `__nv_bfloat162`。 该操作缓存在只读数据缓存中（请参阅[全局内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#global-memory-3-0)）。
+返回位于地址 `address` 的 T 类型数据，其中 T 为 `char、signed char、short、int、long、long longunsigned char、unsigned short、unsigned int、unsigned long、unsigned long long、char2、char4、short2、short4、 int2、int4、longlong2uchar2、uchar4、ushort2、ushort4、uint2、uint4、ulonglong2float、float2、float4、double` 或 `double2`. 包含 `cuda_fp16.h` 头文件，T 可以是 `__half` 或 `__half2`。 同样，包含 cuda_bf16.h 头文件后，T 也可以是 `__nv_bfloat16` 或 `__nv_bfloat162`。 该操作缓存在只读数据缓存中（请参阅[全局内存](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#global-memory-3-0)）。
 
 ## B.11. Load Functions Using Cache Hints
 这些加载功能仅受计算能力 3.5 及更高版本的设备支持。
@@ -980,7 +1015,7 @@ long long int clock64();
 在设备代码中执行时，返回每个时钟周期递增的每个多处理器计数器的值。 在内核开始和结束时对该计数器进行采样，获取两个样本的差异，并记录每个线程的结果，为每个线程提供设备完全执行线程所花费的时钟周期数的度量， 但不是设备实际执行线程指令所花费的时钟周期数。 前一个数字大于后者，因为线程是时间切片的。
 
 ## B.14. Atomic Functions
-原子函数对驻留在全局或共享内存中的一个 32 位或 64 位字执行读-修改-写原子操作。 例如，`atomicAdd()` 在全局或共享内存中的某个地址读取一个字，向其中加一个数字，然后将结果写回同一地址。 该操作是原子的，因为它保证在不受其他线程干扰的情况下执行。 换句话说，在操作完成之前，没有其他线程可以访问该地址。 原子函数不充当内存栅栏，也不意味着内存操作的同步或排序约束（有关内存栅栏的更多详细信息，请参阅[内存栅栏函数](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#memory-fence-functions)）。 原子函数只能在设备函数中使用。
+原子函数对驻留在全局或共享内存中的一个 32 位或 64 位字执行读-修改-写原子操作。 例如，`atomicAdd()` 在全局或共享内存中的某个地址读取一个字，向其中加一个数字，然后将结果写回同一地址。 该操作是原子的，因为它保证在不受其他线程干扰的情况下执行。 换句话说，在操作完成之前，没有其他线程可以访问该地址。 原子函数不充当内存栅栏，也不意味着内存操作的同步或排序约束（有关内存栅栏的更多详细信息，请参阅 [内存栅栏函数](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#memory-fence-functions)）。 原子函数只能在设备函数中使用。
 
 原子函数仅相对于特定集合的线程执行的其他操作是原子的：
 
@@ -1257,7 +1292,7 @@ __device__ void * __cvta_local_to_generic(size_t rawbits);
 
 ### B.17.1. Synopsis
 ```C++
-              __host__ __device__ void * alloca(size_t size);
+__host__ __device__ void * alloca(size_t size);
 ```
 
 ### B.17.2. Description
@@ -1391,7 +1426,8 @@ warp 投票功能允许给定 warp 的线程执行缩减和广播操作。 这�
 * __activemask():
 返回调用 warp 中所有当前活动线程的 32 位整数掩码。如果调用 `__activemask()` 时，warp 中的第 N 条通道处于活动状态，则设置第 N 位。非活动线程由返回掩码中的 0 位表示。退出程序的线程总是被标记为非活动的。请注意，在 `__activemask()` 调用中收敛的线程不能保证在后续指令中收敛，除非这些指令正在同步 warp 内置函数。
 
-#### 注意:
+***注意:***
+
 对于` __all_sync、__any_sync 和 __ballot_sync`，必须传递一个掩码(`mask`)来指定参与调用的线程。 必须为每个参与线程设置一个表示线程通道 ID 的位，以确保它们在硬件执行内部函数之前正确收敛。 掩码中命名的所有活动线程必须使用相同的掩码执行相同的内部线程，否则结果未定义。
 
 ## B.20. Warp Match Functions
@@ -1624,7 +1660,7 @@ __device__ void mutex_unlock(unsigned int *mutex) {
 ```
 
 ## B.24. Warp matrix functions
-C++ warp矩阵运算利用Tensor Cores来加速 `D=A*B+C` 形式的矩阵问题。 计算能力 7.0 或更高版本的设备的混合精度浮点数据支持这些操作。 这需要一个warp中所有线程的合作。 此外，仅当条件在整个 [warp](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#simt-architecture) 中的计算结果相同时，才允许在条件代码中执行这些操作，否则代码执行可能会挂起。
+C++ warp矩阵运算利用 Tensor Cores 来加速 `D=A*B+C` 形式的矩阵问题。 计算能力 7.0 或更高版本的设备的混合精度浮点数据支持这些操作。 这需要一个 warp 中所有线程的合作。 此外，仅当条件在整个 [warp](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#simt-architecture) 中的计算结果相同时，才允许在条件代码中执行这些操作，否则代码执行可能会挂起。
 
 ### B.24.1. Description
 以下所有函数和类型都在命名空间 `nvcuda::wmma` 中定义。 Sub-byte操作被视为预览版，即它们的数据结构和 API 可能会发生变化，并且可能与未来版本不兼容。 这个额外的功能在 nvcuda::wmma::experimental 命名空间中定义。
@@ -2648,7 +2684,7 @@ __global__ void with_staging_scope_thread(int* global_out, int const* global_in,
 对于类似 C 的接口，在不兼容 ISO C++ 2011 的情况下进行编译时，请参阅 [Pipeline Primitives Interface](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#pipeline-primitives-interface)。
 
 ### B.27.4. Pipeline Primitives Interface
-`pipeline`原语是用于 `memcpy_async` 功能的类 C 接口。 通过包含 <cuda_pipeline.h> 头文件，可以使用`pipeline`原语接口。 在不兼容 ISO C++ 2011 的情况下进行编译时，请包含 `<cuda_pipeline_primitives.h>` 头文件。
+`pipeline`原语是用于 `memcpy_async` 功能的类 C 接口。 通过包含 `<cuda_pipeline.h>` 头文件，可以使用`pipeline`原语接口。 在不兼容 ISO C++ 2011 的情况下进行编译时，请包含 `<cuda_pipeline_primitives.h>` 头文件。
 
 ### B.27.4.1. memcpy_async Primitive
 
@@ -2849,7 +2885,7 @@ Hello thread 4, f=1.2345
 Hello thread 0, f=1.2345
 Hello thread 3, f=1.2345
 ```
-#### 注意每个线程如何遇到 `printf()` 命令，因此输出行数与网格中启动的线程数一样多。 正如预期的那样，全局值（即 `float f`）在所有线程之间是通用的，而局部值（即 `threadIdx.x`）在每个线程中是不同的。
+***注意：每个线程如何遇到 `printf()` 命令，因此输出行数与网格中启动的线程数一样多。 正如预期的那样，全局值（即 `float f`）在所有线程之间是通用的，而局部值（即 `threadIdx.x`）在每个线程中是不同的。***
 
 下面的代码:
 ```C++
