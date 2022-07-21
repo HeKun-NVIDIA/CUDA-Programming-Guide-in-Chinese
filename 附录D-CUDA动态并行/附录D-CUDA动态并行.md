@@ -1,4 +1,4 @@
-# 附录D-CUDA的动态并行
+# 附录D CUDA的动态并行
 
 ## D.1. Introduction
 
@@ -10,7 +10,7 @@
 
 本文档描述了支持动态并行的 CUDA 的扩展功能，包括为利用这些功能而对 CUDA 编程模型进行必要的修改和添加，以及利用此附加功能的指南和最佳实践。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 `cudaDeviceSynchronize()`）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 `cudaDeviceSynchronize()`）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 只有计算能力为 3.5 或更高的设备支持动态并行。
 
 ### D.1.2. Glossary
@@ -29,14 +29,14 @@
 ### D.2.1. Execution Environment
 CUDA 执行模型基于线程、线程块和网格的原语，内核函数定义了线程块和网格内的各个线程执行的程序。 当调用内核函数时，网格的属性由执行配置描述，该配置在 CUDA 中具有特殊的语法。 CUDA 中对动态并行性的支持扩展了在新网格上配置、启动和同步到设备上运行的线程的能力。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize() 块）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize() 块）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 #### D.2.1.1. Parent and Child Grids
 配置并启动新网格的设备线程属于父网格，调用创建的网格是子网格。
 
 子网格的调用和完成是正确嵌套的，这意味着在其线程创建的所有子网格都完成之前，父网格不会被认为是完整的。 即使调用线程没有在启动的子网格上显式同步，运行时也会保证父子网格之间的隐式同步。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 ![parent-child-launch-nesting.png](parent-child-launch-nesting.png)
 
@@ -46,7 +46,7 @@ CUDA 执行模型基于线程、线程块和网格的原语，内核函数定义
 设备上存在类似的层次结构：启动的内核和 CUDA 对象对线程块中的所有线程都是可见的，但在线程块之间是独立的。 这意味着例如一个流可以由一个线程创建并由同一线程块中的任何其他线程使用，但不能与任何其他线程块中的线程共享。
 
 #### D.2.1.3. Synchronization
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 来自任何线程的 CUDA 运行时操作，包括内核启动，在线程块中都是可见的。 这意味着父网格中的调用线程可以在由该线程启动的网格、线程块中的其他线程或在同一线程块中创建的流上执行同步。 直到块中所有线程的所有启动都完成后，才认为线程块的执行完成。 如果一个块中的所有线程在所有子启动完成之前退出，将自动触发同步操作。
 
@@ -67,7 +67,7 @@ CUDA 流和事件允许控制网格启动之间的依赖关系：启动到同一
 
 缺乏并发保证延伸到父线程块及其子网格。当父线程块启动子网格时，在父线程块到达显式同步点（例如 `cudaDeviceSynchronize()`）之前，不保证子网格开始执行。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 虽然并发通常很容易实现，但它可能会因设备配置、应用程序工作负载和运行时调度而异。因此，依赖不同线程块之间的任何并发性是不安全的。
 
 #### D.2.1.6. Device Management
@@ -80,7 +80,7 @@ CUDA 流和事件允许控制网格启动之间的依赖关系：启动到同一
 #### D.2.2.1.1. Global Memory
 父子网格可以连贯地访问全局内存，但子网格和父网格之间的一致性保证很弱。当子网格的内存视图与父线程完全一致时，子网格的执行有两点：当子网格被父线程调用时，以及当子网格线程完成时（由父线程中的同步 API 调用发出信号）。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 在子网格调用之前，父线程中的所有全局内存操作对子网格都是可见的。在父网格完成同步后，子网格的所有内存操作对父网格都是可见的。
 
@@ -153,7 +153,7 @@ __device__ void y() {
 #### D.2.2.1.6. Texture Memory
 对纹理映射的全局内存区域的写入相对于纹理访问是不连贯的。 纹理内存的一致性在子网格的调用和子网格完成时强制执行。 这意味着在子内核启动之前写入内存会反映在子内核的纹理内存访问中。 类似地，子进程对内存的写入将反映在父进程对纹理内存的访问中，但只有在父进程同步子进程完成之后。 父子并发访问可能会导致数据不一致。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 `cudaDeviceSynchronize()`）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 `cudaDeviceSynchronize()`）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 ## D.3. Programming Interface
 
@@ -171,7 +171,7 @@ kernel_name<<< Dg, Db, Ns, S >>>([kernel arguments]);
 
 与主机端启动相同，所有设备端内核启动相对于启动线程都是异步的。 也就是说，`<<<>>>` 启动命令将立即返回，启动线程将继续执行，直到它命中一个明确的启动同步点，例如 `cudaDeviceSynchronize()`。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 网格启动会发布到设备，并将独立于父线程执行。 子网格可以在启动后的任何时间开始执行，但不能保证在启动线程到达显式启动同步点之前开始执行。
 
@@ -189,7 +189,7 @@ kernel_name<<< Dg, Db, Ns, S >>>([kernel arguments]);
 
 由于设备运行时不支持 `cudaStreamSynchronize()` 和 `cudaStreamQuery()`，因此当应用程序需要知道流启动的子内核已完成时，应使用 `cudaDeviceSynchronize()`。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 #### D.3.1.2.1. The Implicit (NULL) Stream
 
@@ -202,7 +202,7 @@ kernel_name<<< Dg, Db, Ns, S >>>([kernel arguments]);
 
 #### D.3.1.4. Synchronization
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 `cudaDeviceSynchronize()` 函数将同步线程块中任何线程启动的所有工作，直到调用 `cudaDeviceSynchronize()` 为止。 请注意，可以从不同的代码中调用 `cudaDeviceSynchronize()`（请参阅[块范围同步](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#block-wide-synchronization)）。
 
@@ -226,7 +226,7 @@ kernel_name<<< Dg, Db, Ns, S >>>([kernel arguments]);
 ##### D.3.1.6.2. Textures & Surfaces
 CUDA 支持动态创建的[纹理和表面对象](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#fntarg_14)，其中纹理引用可以在主机上创建，传递给内核，由该内核使用，然后从主机销毁。 设备运行时不允许从设备代码中创建或销毁纹理或表面对象，但从主机创建的纹理和表面对象可以在设备上自由使用和传递。 不管它们是在哪里创建的，动态创建的纹理对象总是有效的，并且可以从父内核传递给子内核。
 
-#### 注意：设备运行时不支持从设备启动的内核中的遗留模块范围（即费米风格）纹理和表面。 模块范围（遗留）纹理可以从主机创建并在设备代码中用于任何内核，但只能由顶级内核（即从主机启动的内核）使用。
+注意：设备运行时不支持从设备启动的内核中的遗留模块范围（即费米风格）纹理和表面。 模块范围（遗留）纹理可以从主机创建并在设备代码中用于任何内核，但只能由顶级内核（即从主机启动的内核）使用。
 
 ##### D.3.1.6.3. Shared Memory Variable Declarations
 在 CUDA C++ 中，共享内存可以声明为静态大小的文件范围或函数范围的变量，也可以声明为外部变量，其大小由内核调用者在运行时通过启动配置参数确定。 这两种类型的声明在设备运行时都有效。
@@ -291,7 +291,7 @@ extern __device__ cudaError_t cudaLaunchDevice(void *kernel,
                                         dim3 blockDim,
                                         unsigned int sharedMemSize = 0,
                                         cudaStream_t stream = 0);
- ```
+```
 
  #### D.3.1.8. API Reference
  此处详细介绍了设备运行时支持的 CUDA 运行时 API 部分。 主机和设备运行时 API 具有相同的语法； 语义是相同的，除非另有说明。 下表提供了与主机可用版本相关的 API 概览。
@@ -398,7 +398,7 @@ cudaError_t cudaLaunchDevice(void *func, void *parameterBuffer,
   .param .b32 size
 )
 ;
- ```
+```
 
 `cudaGetParameterBuffer()` 的以下 CUDA 级声明映射到上述 PTX 级声明：
 ```C++
@@ -442,7 +442,7 @@ void *cudaGetParameterBuffer(size_t alignment, size_t size);
 
 已经有 CUDA 经验的人应该熟悉设备运行时的编程。 设备运行时语法和语义与主机 API 基本相同，但本文档前面详细介绍了任何例外情况。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 以下示例显示了一个包含动态并行性的简单 Hello World 程序：
 
@@ -496,7 +496,7 @@ int main(int argc, char *argv[])
 
 #### D.4.2.1. Synchronization
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 一个线程的同步可能会影响同一线程块中其他线程的性能，即使这些其他线程自己不调用 `cudaDeviceSynchronize()` 也是如此。 这种影响将取决于底层实现。 通常，与显式调用 `cudaDeviceSynchronize()` 相比，在线程块结束时完成子内核的隐式同步更有效。 因此，如果需要在线程块结束之前与子内核同步，建议仅调用 `cudaDeviceSynchronize()`。
 
@@ -519,7 +519,7 @@ int main(int argc, char *argv[])
 ##### D.4.3.1.2. Nesting and Synchronization Depth
 使用设备运行时，一个内核可能会启动另一个内核，而该内核可能会启动另一个内核，以此类推。每个从属启动都被认为是一个新的嵌套层级，层级总数就是程序的嵌套深度。同步深度定义为程序在子启动时显式同步的最深级别。通常这比程序的嵌套深度小一，但如果程序不需要在所有级别调用 `cudaDeviceSynchronize()` ，则同步深度可能与嵌套深度有很大不同。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 总体最大嵌套深度限制为 24，但实际上，真正的限制将是系统为每个新级别所需的内存量（请参阅上面的[内存占用量](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#memory-footprint)）。任何会导致内核处于比最大值更深的级别的启动都将失败。请注意，这也可能适用于 `cudaMemcpyAsync()`，它本身可能会生成内核启动。有关详细信息，请参阅[配置选项](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#configuration-options)。
 
@@ -538,7 +538,7 @@ int main(int argc, char *argv[])
 ##### D.4.3.1.4. Configuration Options
 设备运行时系统软件的资源分配通过主机程序的 `cudaDeviceSetLimit()` API 进行控制。 限制必须在任何内核启动之前设置，并且在 GPU 正在运行程序时不得更改。
 
-#### 警告：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
+注意：与父块的子内核显式同步（即在设备代码中使用 cudaDeviceSynchronize()）在 CUDA 11.6 中已弃用，并计划在未来的 CUDA 版本中删除。
 
 可以设置以下命名限制：
 
@@ -564,7 +564,6 @@ int main(int argc, char *argv[])
 
 ##### D.4.3.1.7. ECC Errors
 CUDA 内核中的代码没有可用的 ECC 错误通知。 整个启动树完成后，主机端会报告 ECC 错误。 在嵌套程序执行期间出现的任何 ECC 错误都将生成异常或继续执行（取决于错误和配置）。
-
 
 
 
