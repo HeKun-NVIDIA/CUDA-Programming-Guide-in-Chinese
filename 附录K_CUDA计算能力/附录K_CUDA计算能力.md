@@ -657,6 +657,7 @@ SM 具有：
 * 一个统一的 L1/纹理缓存，用于从大小为 24 KB（6.0 和 6.2）或 48 KB（6.1）的全局内存中读取，
 * 大小为 64 KB（6.0 和 6.2）或 96 KB（6.1）的共享内存。
   
+
 纹理单元也使用统一的 L1/纹理缓存，实现纹理和表面内存中提到的各种寻址模式和数据过滤。
 
 还有一个由所有 SM 共享的 L2 缓存，用于缓存对本地或全局内存的访问，包括临时寄存器溢出。应用程序可以通过检查 `l2CacheSize` 设备属性来查询 L2 缓存大小（请参阅[设备枚举](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-enumeration)）。
@@ -790,8 +791,6 @@ for (int i = warpLane; i - warpLane < dataLen; i += warpSize) {
 `cuda-memcheck` 提供的 `racecheck` 和 `synccheck` 工具可以帮助定位第 2 点和第 3 点的违规行为。
 
 为了在实现上述纠正措施的同时帮助迁移，开发人员可以选择加入不支持独立线程调度的 Pascal 调度模型。 有关详细信息，请参阅应用[程序兼容性](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#application-compatibility)。
-
-
 
 ### K.6.3. Global Memory
 
